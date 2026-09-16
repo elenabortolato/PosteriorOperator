@@ -26,8 +26,14 @@ are separable here, which is the point of choosing this model:
     needs, so if THAT is the binding constraint, NCP degrades on this axis
     instead.
 
-They are independent knobs, so the sweep separates two explanations that every
-previous experiment confounded.
+These knobs are NOT independent if handled naively: adding categories at a
+fixed n_trials spreads the same observations over more cells, so chi^2 climbs
+steeply with K (41 at K=3, 534 at K=5, and about 260000 at K=10, all at
+N=100). A dimension sweep at fixed N therefore confounds exactly the two
+explanations it is supposed to separate -- a first run of this script did, and
+its K=3 -> K=5 degradation was uninterpretable. The dimension table below
+instead tunes n_trials per K to hold chi^2 near 5, so dimension is the only
+thing moving.
 
 Run:  python examples/lfi/09_conjugate_exact_truth.py
 """
@@ -42,7 +48,7 @@ from posterior_operator.simulators import DirichletMultinomial
 
 SEED = 0
 N_SIM = 40000
-N_EVAL = 100  # observations scored per configuration
+N_EVAL = 50  # observations scored per configuration
 N_EXACT = 4000  # exact posterior draws used for the W1 reference
 RANK = 64
 LAYER_SIZE = 128
@@ -153,18 +159,24 @@ def main() -> None:
 
     # ---------------------------------------------------- dimension of theta
     print("=" * 88)
-    print("Axis 1: the dimension of theta, at fixed information per dataset")
+    print("Axis 1: the dimension of theta, with chi^2 HELD FIXED at about 5")
     print("=" * 88)
-    print(f"{'K':>4}{'dim':>5}{'chi^2':>9}{'post/prior':>12}{'NCP W1':>9}{'NPE W1':>9}"
+    print("  Holding n_trials fixed instead would confound the two axes: the same")
+    print("  observations spread over more cells, so chi^2 climbs with K (41 at K=3,")
+    print("  534 at K=5, ~260000 at K=10 with N=100) and any degradation could be")
+    print("  blamed on either. n_trials is therefore tuned per K -- by the calibration")
+    print("  in chi_squared() -- so that chi^2 is roughly constant down the column and")
+    print("  the ONLY thing changing is the dimension of theta.\n")
+    print(f"{'K':>4}{'dim':>5}{'N':>5}{'chi^2':>9}{'post/prior':>12}{'NCP W1':>9}{'NPE W1':>9}"
           f"{'NCP mean':>10}{'NPE mean':>10}{'NCP cov':>9}{'NPE cov':>9}{'  winner':>9}")
     print("-" * 88)
-    for k in (3, 5, 10, 20):
-        sim = DirichletMultinomial(n_categories=k, n_trials=100, concentration=2.0)
+    for k, n_trials in ((3, 15), (5, 8), (10, 5), (20, 5)):
+        sim = DirichletMultinomial(n_categories=k, n_trials=n_trials, concentration=2.0)
         started = time.perf_counter()
         r = evaluate(sim)
         c2 = chi_squared(sim)
         win = "NCP" if r["ncp_w1"] < r["npe_w1"] else "NPE"
-        print(f"{k:>4}{sim.theta_dim:>5}{c2:>9.2f}{r['concentration']:>12.3f}"
+        print(f"{k:>4}{sim.theta_dim:>5}{n_trials:>5}{c2:>9.2f}{r['concentration']:>12.3f}"
               f"{r['ncp_w1']:>9.4f}{r['npe_w1']:>9.4f}{r['ncp_mean']:>10.4f}{r['npe_mean']:>10.4f}"
               f"{r['ncp_cov']:>9.3f}{r['npe_cov']:>9.3f}{win:>9}"
               f"   [{time.perf_counter() - started:.0f}s]")
