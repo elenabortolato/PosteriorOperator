@@ -249,6 +249,18 @@ def main() -> None:
     print("  which tracks the crossover just as well (0.42, 0.59, 0.78, 0.92, 0.98) and")
     print("  is free. This is a decision rule you can check before trusting an answer,")
     print("  which is worth more than an unconditional accuracy claim.")
+    print()
+    print("  WHAT THIS DOES NOT SHOW. One model family, one seed per cell, one")
+    print("  architecture across every configuration. The monotone chi^2 trend spans")
+    print("  four orders of magnitude and is unlikely to be noise, but the LOCATION of")
+    print("  the crossover rests on single runs either side of it, so treat it as an")
+    print("  order of magnitude rather than a threshold. Table 1 conditions on")
+    print("  chi^2 = 5 throughout; whether the absence of decay in the dimension")
+    print("  survives at chi^2 = 50 is untested. And holding chi^2 fixed while raising")
+    print("  p necessarily drives the posterior towards the prior (post/prior 0.52 to")
+    print("  0.94), so 'high-dimensional' here means many WEAKLY informed parameters.")
+    print("  Many sharply informed ones put both axes against the operator, and that")
+    print("  corner was not measured.")
 
 
 if __name__ == "__main__":

@@ -424,6 +424,18 @@ the honest claim is conditional and checkable rather than unconditional: **many
 weakly-informed parameters favour the operator; few sharply-informed ones favour
 NPE.**
 
+*Limits of this evidence.* One model family, one seed per cell, one architecture
+(rank 64, width 128) held fixed across every configuration. The monotone $\chi^2$
+trend spans four orders of magnitude and is unlikely to be noise, but the
+*location* of the crossover ($\chi^2 \approx 4$ at 4 dimensions) rests on single
+runs either side of it and needs replication before it is quoted as a threshold.
+The dimension table conditions on $\chi^2 \approx 5$ throughout; whether the
+absence of decay in the dimension survives at larger $\chi^2$ is untested. And
+holding $\chi^2$ fixed while raising $p$ necessarily drives the posterior towards
+the prior (`post/prior` 0.52 → 0.94), so "high-dimensional" here means many
+weakly-informed parameters, not many sharply-informed ones — the latter is the
+corner where both axes work against the operator, and it was not measured.
+
 ### Does σ_k decay as assumed?
 
 `lfi/05_spectrum_decay.py` fits both decay laws on MA(2), AR(2) and g-and-k,
