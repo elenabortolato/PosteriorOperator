@@ -20,6 +20,7 @@ to see the evidence without waiting for it.
 | `05_spectrum_decay.txt` | `examples/lfi/05_...` | geometric vs polynomial decay on MA(2), AR(2), g-and-k |
 | `06_mechanistic_amortization.txt` | `examples/lfi/06_...` | **the NPE comparison**: NCP vs NPE vs direct regression on SIR, accuracy and cost |
 | `07_functional_confidence_intervals.txt` | `examples/lfi/07_...` | sampling distribution of T_hat_f(y_0); bootstrap coverage |
+| `08_gandk_npe.txt` | `examples/lfi/08_...` | **NPE on a genuinely intractable model**: g-and-k against a large-budget ABC reference, marginal accuracy, calibration, query cost |
 
 Runs are seeded, so re-running reproduces these files up to floating-point
 non-determinism in the threaded BLAS calls. Timings in the captured output are

@@ -257,8 +257,15 @@ density network, i.e. NPE in its original form).
 | `lfi/05_spectrum_decay.py` | does $\sigma_k$ decay as assumed? MA(2), AR(2), g-and-k, calibrated against the exact Gaussian spectrum |
 | `lfi/06_mechanistic_amortization.py` | SIR epidemic: NCP vs NPE vs one-regression-per-functional, on accuracy *and* cost |
 | `lfi/07_functional_confidence_intervals.py` | frequentist coverage for $\widehat{T}_f(y_0)$; root-$n$ or not; the bootstrap's actual coverage |
+| `lfi/08_gandk_npe.py` | g-and-k, a model with no closed-form density: NCP vs NPE against a large-budget ABC reference |
 
-These four cover the first four items of the paper's experimental protocol.
+Together these cover the experimental protocol. Note the division of labour
+between the two NPE comparisons: `06` uses SIR, which is mechanistic but has a
+*tractable* likelihood (deterministic ODE plus Gaussian noise), bought
+deliberately so that an exact reference posterior exists. `08` uses g-and-k,
+which is genuinely intractable — the price being that its reference is itself
+an estimate, so that script reports how far the reference moves under its own
+tolerance.
 
 ## What the experiments say
 

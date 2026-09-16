@@ -1,0 +1,84 @@
+====================================================================================
+g-and-k: no closed-form density, so this is a real likelihood-free model
+====================================================================================
+  prior            uniform on [0, 10]^4 over (A, B, g, k)
+  data             100 iid draws -> 4 octile summaries (log on spread, kurtosis)
+  training budget  60000 simulations, shared by NCP and NPE
+  reference        rejection ABC, 2,000,000 draws, closest 2000 kept
+
+reference table simulated in 5.4s
+ABC tolerance over the 24 scored observations: median 0.353, max 0.809
+reference self-drift when the tolerance is tightened 4x (W1 / prior sd):
+   A=0.035  B=0.057  g=0.047  k=0.024
+   -> differences below this floor are reference error, not method error.
+
+====================================================================================
+Training, on the same simulations
+====================================================================================
+  NCP  rank  64    50,752 parameters  fitted in   50.2s
+  NPE  10 cmp      28,762 parameters  fitted in   63.9s
+  sigma_1 = 0.9852,  chi^2 = 24.75
+  top singular values: [0.985 0.981 0.969 0.963 0.959 0.943]
+
+====================================================================================
+Accuracy against the ABC reference, averaged over 24 observations
+====================================================================================
+  All errors in units of the prior standard deviation, so 1.0 means 'as
+  wrong as answering with the prior'.
+
+        |mean err| NCP      NPE        W1 NCP      NPE    ref floor
+------------------------------------------------------------------------------------
+     A          0.0630   0.0486        0.4612   0.0811       0.0346
+     B          0.1046   0.1391        0.2532   0.1463       0.0570
+     g          0.0856   0.0879        0.1820   0.1039       0.0472
+     k          0.0550   0.0370        0.3624   0.0473       0.0235
+------------------------------------------------------------------------------------
+   all          0.0771   0.0781        0.3147   0.0947       0.0406
+
+====================================================================================
+Calibration: nominal 90% credible intervals over 300 observations
+====================================================================================
+  This needs no reference -- it asks whether the stated intervals contain the
+  theta that actually generated the data, at the rate they claim.
+
+         coverage NCP      NPE       width NCP      NPE    ABC(24 obs)
+------------------------------------------------------------------------------------
+     A          0.997    0.900           7.082    1.933          2.543
+     B          0.993    0.917           8.196    5.649          6.808
+     g          0.963    0.920           8.527    7.536          8.188
+     k          0.997    0.930           6.824    2.813          3.171
+------------------------------------------------------------------------------------
+  mean          0.987    0.917     nominal 0.900
+
+====================================================================================
+Cost of one more functional, after training
+====================================================================================
+  300 observations, NPE using 4000 draws each.
+
+         cold (ms/obs)   warm (ms/obs)    f evaluated at
+------------------------------------------------------------------------------------
+   NCP          0.0572          0.0052       20,000 pts
+   NPE          0.2486          0.0078    1,200,000 pts
+------------------------------------------------------------------------------------
+  cold: 4x in NCP's favour, warm: 2x
+  The structural reason is the last column. The operator's atoms are the same
+  stored prior draws for every observation, so a new f is evaluated once for
+  the whole batch and each observation costs one dot product. NPE's draws are
+  per-observation, so f must be evaluated n_obs x n_draws times and the count
+  grows with the batch. The gap widens with the number of observations queried,
+  not with the number of functionals.
+
+figures written to /home/user/PosteriorOperator/figures/gandk_posteriors.png and /home/user/PosteriorOperator/figures/gandk_npe_comparison.png
+
+====================================================================================
+Reading
+====================================================================================
+  Read the W1 column, not the mean column. Under this prior g is only weakly
+  identified by 100 observations, so a method can land the posterior mean and
+  still be badly wrong about the shape; W1 against the reference catches that
+  and the mean error does not.
+
+  Everything here is scored against an ABC reference, which is itself an
+  estimate. The 'ref floor' column says how far that reference moves when its
+  own tolerance is tightened fourfold. A method-to-method gap smaller than the
+  floor is not evidence of anything.
