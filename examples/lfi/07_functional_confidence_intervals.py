@@ -115,9 +115,10 @@ def main() -> None:
     print("-" * 86)
     print("  'sd * sqrt(n)' is the diagnostic for (a): constant down the column means the")
     print("  spread shrinks at the root-n rate, while a GROWING column means it shrinks")
-    print("  more slowly than that. 'bias/sd' is the diagnostic for (b): around 0.5 means")
-    print("  bias and spread are comparable, so an interval that accounts only for the")
-    print("  spread cannot be calibrated even if it gets the spread exactly right.")
+    print("  more slowly than that. 'bias/sd' is the diagnostic for (b): anything of")
+    print("  order a few tenths means bias is a substantial fraction of the spread, so")
+    print("  an interval that accounts only for the spread cannot be calibrated even if")
+    print("  it gets the spread exactly right.")
 
     # Ratios make the rate easier to read than the raw column.
     print("\n  rate between consecutive sample sizes (2.0 would be exactly root-n):")

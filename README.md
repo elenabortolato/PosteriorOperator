@@ -331,6 +331,46 @@ truth at the top and undershoots in the tail at large $n$, so the fitted rates
 and tails are mildly optimistic — the script measures that bias rather than
 assuming it.)
 
+### Is there a valid confidence interval for $\widehat{T}_f(y_0)$?
+
+`lfi/07_functional_confidence_intervals.py` repeats the whole
+simulate-and-fit pipeline 20 times per sample size on a linear-Gaussian model,
+where $T_f(y_0)$ is known exactly, and measures the sampling distribution of
+the estimate. **The result inverts the predicted ordering of the two regimes.**
+
+| architecture | n=1000 | n=4000 | n=16000 | |
+| --- | --- | --- | --- | --- |
+| **fixed** (rank 8) — sd·√n | 1.59 | 2.34 | 4.43 | grows ⇒ slower than root-$n$ |
+| **growing** (rank 8→32) — sd·√n | 1.75 | 1.22 | 1.73 | flat ⇒ tracks root-$n$ |
+
+The regime expected to give a root-$n$ guarantee is the one that fails to
+deliver it: with the architecture held fixed the RMSE plateaus (0.059 → 0.042)
+and the consecutive sd ratios are 1.36 and 1.06 against the 2.00 root-$n$ would
+give. Two causes. A small fixed network is **not** a correctly specified
+parametric family for this operator — its exact spectrum is infinite — so there
+is an approximation floor no amount of data removes; and the spread that
+remains across replicates comes from where the non-convex fit lands, which is a
+function of initialisation rather than of $n$. The M-estimation argument needs
+a unique, well-separated population minimiser that the optimiser actually
+reaches, and with a neural parametrisation neither premise holds.
+
+The draw-bootstrap consequently degrades from usable to badly overconfident:
+
+| n | true sd | bootstrap sd | captured | coverage (nominal 0.90) |
+| --- | --- | --- | --- | --- |
+| 1000 | 0.0504 | 0.0609 | 121% | 0.95 |
+| 4000 | 0.0371 | 0.0312 | 84% | 0.74 |
+| 16000 | 0.0350 | 0.0154 | 44% | **0.48** |
+
+It degrades *because* it is correct about the part it measures — its width
+falls like $n^{-1/2}$ while the true spread plateaus, so the two diverge.
+`bootstrap_functional` is documented as a Monte Carlo error bar on the
+averaging step, which is what it is, not as a confidence interval for
+$T_f(y_0)$. For the write-up this suggests stating the fixed-architecture
+result as an interval for the best rank-$d$ approximation of $T_f(y_0)$ —
+conditional on the learned subspace — and treating optimisation variability as
+a third error source alongside approximation and sampling.
+
 Two claims did **not** survive testing, both worth knowing before relying on
 them:
 
