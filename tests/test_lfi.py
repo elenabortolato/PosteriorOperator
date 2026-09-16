@@ -213,6 +213,66 @@ def test_moments_use_the_signed_weights():
     signed = _hand_made([[0.6, -0.3, 0.7]], [0.0, 1.0, 2.0])
     expected = 0.6 * 0.0 + (-0.3) * 1.0 + 0.7 * 2.0
     assert float(signed.mean()[0, 0]) == pytest.approx(expected)
+
+
+# --------------------------------------------------------------------------- #
+# The isotonic projection
+# --------------------------------------------------------------------------- #
+
+
+def test_with_projection_validates_its_argument():
+    signed = _hand_made([[0.6, -0.3, 0.7]], [0.0, 1.0, 2.0])
+    with pytest.raises(ValueError, match="clip.*isotonic"):
+        signed.with_projection("nearest")
+
+
+def test_with_projection_leaves_the_default_and_the_moments_alone():
+    signed = _hand_made([[0.6, -0.3, 0.7]], [0.0, 1.0, 2.0])
+    isotonic = signed.with_projection("isotonic")
+    # Moment functionals keep the signed masses whatever the projection is.
+    assert float(isotonic.mean()[0, 0]) == pytest.approx(float(signed.mean()[0, 0]))
+    # The original is untouched, and "clip" restores the default behaviour.
+    assert torch.allclose(signed.credible_interval(0.1), _hand_made(
+        [[0.6, -0.3, 0.7]], [0.0, 1.0, 2.0]).credible_interval(0.1))
+    assert torch.allclose(
+        isotonic.with_projection("clip").cdf()[1], signed.cdf()[1]
+    )
+
+
+def test_isotonic_projection_gives_a_valid_cdf():
+    signed = _hand_made([[0.6, -0.3, 0.7], [-0.4, 0.9, 0.5]], [0.0, 1.0, 2.0])
+    values, cdf = signed.with_projection("isotonic").cdf()
+    assert torch.all(values[1:] >= values[:-1])
+    assert torch.all(cdf[:, 1:] >= cdf[:, :-1] - 1e-12)
+    assert torch.all((cdf >= 0) & (cdf <= 1))
+    assert torch.allclose(cdf[:, -1], torch.ones(2, dtype=cdf.dtype))
+
+
+def test_isotonic_projection_keeps_mass_the_clipped_one_discards():
+    # Masses 0.6, -0.3, 0.7 accumulate to 0.6, 0.3, 1.0. That is already
+    # non-monotone at the middle atom, so PAVA pools the first two to 0.45 and
+    # the projected CDF is (0.45, 0.45, 1.0) -- the middle atom keeps zero mass
+    # but the FIRST atom is pulled down, which clipping never does.
+    signed = _hand_made([[0.6, -0.3, 0.7]], [0.0, 1.0, 2.0])
+    _, isotonic = signed.with_projection("isotonic").cdf()
+    _, clipped = signed.cdf()
+    assert float(isotonic[0, 0]) == pytest.approx(0.45)
+    assert float(clipped[0, 0]) == pytest.approx(0.6 / 1.3)
+    assert float(isotonic[0, 0]) < float(clipped[0, 0])
+
+
+def test_isotonic_projection_is_the_identity_on_a_probability_measure():
+    already = _hand_made([[0.25, 0.25, 0.5]], [0.0, 1.0, 2.0])
+    _, isotonic = already.with_projection("isotonic").cdf()
+    _, plain = already.cdf()
+    assert torch.allclose(isotonic, plain)
+
+
+def test_isotonic_quantiles_are_monotone_in_the_level():
+    signed = _hand_made([[0.9, -0.5, 0.2, 0.4]], [0.0, 1.0, 2.0, 3.0])
+    levels = [0.05, 0.25, 0.5, 0.75, 0.95]
+    quantiles = signed.with_projection("isotonic").quantile(levels)
+    assert torch.all(quantiles.diff(dim=-1) >= 0)
     assert float(signed.mean()[0, 0]) != pytest.approx(float(signed.as_probability().mean()[0, 0]))
 
 

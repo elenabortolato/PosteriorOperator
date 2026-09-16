@@ -29,33 +29,62 @@ def isotonic_regression(values: Tensor) -> Tensor:
 
     Applied row-wise to ``(..., n)`` inputs. Used to repair a CDF estimate when
     negative density-ratio values have made it non-monotone.
+
+    The pool-adjacent-violators stack is carried for every row at once, so the
+    Python loop runs once over the atoms rather than once per row. That matters
+    because the natural call here is one row per observation with one atom per
+    stored prior draw, and a per-row implementation costs about a second per
+    observation at twenty thousand atoms.
     """
-    flat = values.reshape(-1, values.shape[-1]).clone()
-    for row in range(flat.shape[0]):
-        y = flat[row]
-        n = y.shape[0]
-        # Stacks of pooled blocks: value, weight (block length), start index.
-        block_val = torch.empty(n, dtype=y.dtype, device=y.device)
-        block_len = torch.empty(n, dtype=torch.long, device=y.device)
-        top = 0
-        for i in range(n):
-            block_val[top] = y[i]
-            block_len[top] = 1
-            top += 1
-            while top > 1 and block_val[top - 2] > block_val[top - 1]:
-                w1, w2 = block_len[top - 2], block_len[top - 1]
-                pooled = (block_val[top - 2] * w1 + block_val[top - 1] * w2) / (w1 + w2)
-                block_val[top - 2] = pooled
-                block_len[top - 2] = w1 + w2
-                top -= 1
-        out = torch.empty_like(y)
-        pos = 0
-        for b in range(top):
-            length = int(block_len[b].item())
-            out[pos : pos + length] = block_val[b]
-            pos += length
-        flat[row] = out
-    return flat.reshape(values.shape)
+    import numpy as np
+
+    original_shape = values.shape
+    flat = values.reshape(-1, original_shape[-1])
+    array = flat.detach().cpu().numpy().astype(np.float64, copy=True)
+    n_rows, n = array.shape
+    if n == 0:
+        return values.clone()
+
+    rows = np.arange(n_rows)
+    block_val = np.empty((n_rows, n), dtype=np.float64)
+    block_len = np.zeros((n_rows, n), dtype=np.int64)
+    top = np.zeros(n_rows, dtype=np.int64)
+
+    for i in range(n):
+        block_val[rows, top] = array[:, i]
+        block_len[rows, top] = 1
+        top += 1
+        # Pool while the last block undercuts the one before it. Different rows
+        # need different numbers of merges, so iterate on the set that still
+        # violates instead of on a per-row while loop.
+        while True:
+            active = top > 1
+            if not active.any():
+                break
+            last = np.where(active, top - 1, 0)
+            prev = np.where(active, top - 2, 0)
+            violating = active & (block_val[rows, prev] > block_val[rows, last])
+            if not violating.any():
+                break
+            sel = rows[violating]
+            a, b = prev[violating], last[violating]
+            w1 = block_len[sel, a]
+            w2 = block_len[sel, b]
+            block_val[sel, a] = (block_val[sel, a] * w1 + block_val[sel, b] * w2) / (w1 + w2)
+            block_len[sel, a] = w1 + w2
+            top[violating] -= 1
+
+    # Expand the blocks back to length n. Each row has `top[r]` blocks whose
+    # lengths sum to n, so a cumulative-count lookup assigns every position.
+    out = np.empty_like(array)
+    valid = np.arange(n)[None, :] < top[:, None]
+    lengths = np.where(valid, block_len, 0)
+    ends = np.cumsum(lengths, axis=1)
+    for r in range(n_rows):
+        index = np.searchsorted(ends[r, : top[r]], np.arange(n), side="right")
+        out[r] = block_val[r, index]
+
+    return torch.as_tensor(out, dtype=values.dtype, device=values.device).reshape(original_shape)
 
 
 class GaussianKDE:

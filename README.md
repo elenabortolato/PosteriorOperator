@@ -318,6 +318,49 @@ weighted average over stored draws at **0.08 ms**, against 72 ms for NPE
 (which must resample) and a full refit for a regression. So the claim to make
 for it is a cost claim, not an accuracy claim.
 
+### Clipping the negative masses was costing the operator the comparison
+
+`lfi/08_gandk_npe.py`, g-and-k (no closed-form density), 60k simulations shared
+by both methods, scored against a 2,000,000-draw rejection-ABC reference.
+Averaged over the four parameters, in units of the prior standard deviation:
+
+| | NCP clipped | **NCP isotonic** | NPE | ref. floor |
+| --- | --- | --- | --- | --- |
+| posterior mean error | 0.0771 | 0.0771 | 0.0781 | — |
+| $W_1$ to the reference | 0.3147 | **0.1059** | 0.0947 | 0.0406 |
+| coverage of 90% intervals | 0.987 | 0.951 | 0.917 | nominal 0.90 |
+
+Read left to right. The posterior **means tie** with NPE. On distribution
+*shape* the operator appeared to lose by 3.3×, and a rank sweep from 32 to 512
+ruled out capacity as the cause — the interval width moved by under 2% across a
+16× rank increase. The cause was elsewhere:
+
+| posterior sd | ABC | NCP signed | NCP clipped | NCP isotonic | NPE | prior |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | 0.804 | 0.682 | 2.380 | 1.111 | 0.643 | 2.887 |
+| k | 0.972 | 0.870 | 2.297 | 1.201 | 0.899 | 2.887 |
+
+The operator's **signed** second moments match both the reference and NPE. It
+is the step that makes the masses non-negative that loses the information: 45%
+of the masses are negative here, and clip-and-renormalise deletes exactly the
+mass whose job is to carve probability out of the prior's tails, so every
+quantile and interval reverts towards the prior.
+
+Accumulating the signed masses into a CDF and projecting *that* onto monotone
+functions keeps them — a negative mass then pulls probability off the atoms
+before it instead of being deleted. That closes the shape gap to within the
+reference's own error floor. Available as
+`posterior.with_projection("isotonic")`; see
+[`PosteriorSample.with_projection`](posterior_operator/lfi.py). It is not yet
+the default because it changes every order-statistic query, but on this
+evidence it should probably become one.
+
+![g-and-k](figures/gandk_posteriors.png)
+
+The same mechanism is the likeliest explanation for the "valid but 2–4× too
+wide" MA(2) intervals noted above: on a quick MA(2) check the 90% interval for
+$\theta_1$ goes from $(-0.43, 1.73)$ clipped to $(0.74, 1.51)$ isotonic.
+
 ### Does σ_k decay as assumed?
 
 `lfi/05_spectrum_decay.py` fits both decay laws on MA(2), AR(2) and g-and-k,

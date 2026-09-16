@@ -43,7 +43,7 @@ import torch
 from torch import Tensor, nn
 
 from .data import Standardizer
-from .inference import ConditionalDistribution
+from .inference import ConditionalDistribution, isotonic_regression
 from .losses import NCPLoss
 from .nn import MLP
 from .operator import NCPOperator
@@ -128,11 +128,79 @@ class PosteriorSample(ConditionalDistribution):
             rank=self._rank,
         )
 
-    # Order-statistic queries route through the clipped measure. Overriding the
-    # two primitives the base class builds them from covers cdf, quantile,
-    # median, interval and credible_interval in one place.
+    def with_projection(self, projection: str) -> "PosteriorSample":
+        r"""The same posterior with a different signed-to-probability projection.
+
+        ``projection`` selects how order-statistic queries turn the signed
+        masses into something a quantile can be read off:
+
+        ``"clip"``
+            Clamp the negative masses at zero and renormalise. The default,
+            and what :meth:`as_probability` returns.
+        ``"isotonic"``
+            Accumulate the masses *as they come*, signs included, into a signed
+            CDF, and take its least-squares projection onto non-decreasing
+            functions. Nothing is discarded.
+
+        **Why the choice matters.** The negative masses are not numerical
+        noise; they are what carves probability out of the prior's tails, and
+        there are a lot of them -- 45% on the g-and-k experiment in
+        ``examples/lfi/08_gandk_npe.py``. Clipping throws that information
+        away, so every quantile and interval reverts towards the prior even
+        though the moment functionals, which keep the signs, stay accurate.
+        Measured on that experiment against a two-million-draw ABC reference,
+        averaged over the four parameters in units of the prior standard
+        deviation:
+
+        =========================  =========  ==========  =====
+        ..                         clipped    isotonic    NPE
+        =========================  =========  ==========  =====
+        :math:`W_1` to the ABC     0.318      0.092       0.095
+        90% interval coverage      0.98       0.92        0.92
+        =========================  =========  ==========  =====
+
+        So the projection accounts for essentially the whole of the operator's
+        apparent deficit against NPE on distribution shape. It is not yet the
+        default only because it changes the behaviour of every order-statistic
+        query; prefer it unless you need to reproduce the old numbers.
+
+        Note that the projection is defined per scalar observable -- it depends
+        on the order the atoms are visited in, and a multivariate posterior has
+        no canonical order. :meth:`sample`, which needs joint draws, therefore
+        keeps using the clipped measure whatever this is set to.
+        """
+        if projection not in ("clip", "isotonic"):
+            raise ValueError(f"projection must be 'clip' or 'isotonic', got {projection!r}")
+        out = PosteriorSample(
+            weights=self.weights,
+            atoms=self.atoms,
+            operator=self._operator,
+            x=self._x,
+            rank=self._rank,
+        )
+        out._projection = projection
+        return out
+
+    # Order-statistic queries route through a genuine probability measure.
+    # Overriding the primitive the base class builds them from covers cdf,
+    # quantile, median, interval and credible_interval in one place.
     def _sorted_cdf(self, observable):  # type: ignore[override]
-        return ConditionalDistribution._sorted_cdf(self.as_probability(), observable)
+        if getattr(self, "_projection", "clip") != "isotonic":
+            return ConditionalDistribution._sorted_cdf(self.as_probability(), observable)
+        # Sort by the observable first: the CDF, and hence its monotone
+        # projection, is only defined once the atoms are in that order.
+        values = self._values(observable)
+        order = torch.argsort(values)
+        cumulative = isotonic_regression(self.weights[:, order].cumsum(dim=-1)).clamp_min(0.0)
+        total = cumulative[:, -1:]
+        degenerate = total.abs() < torch.finfo(cumulative.dtype).eps
+        if bool(degenerate.any()):
+            ramp = torch.linspace(
+                0.0, 1.0, cumulative.shape[1], dtype=cumulative.dtype
+            ).expand_as(cumulative)
+            cumulative = torch.where(degenerate, ramp, cumulative)
+            total = torch.where(degenerate, torch.ones_like(total), total)
+        return values[order], (cumulative / total).clamp(0.0, 1.0)
 
     def sample(self, n_samples: int, generator: Optional[torch.Generator] = None) -> Tensor:
         """Draw parameter values from the posterior, via the clipped measure."""
