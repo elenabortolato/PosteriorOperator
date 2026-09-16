@@ -10,7 +10,15 @@ import math
 import pytest
 import torch
 
-from posterior_operator.simulators import MA2, SIR, AR2, GAndK, GaussianLinear, SumIdentified
+from posterior_operator.simulators import (
+    MA2,
+    SIR,
+    AR2,
+    DirichletMultinomial,
+    GAndK,
+    GaussianLinear,
+    SumIdentified,
+)
 
 DT = torch.float64
 
@@ -576,3 +584,117 @@ def test_sir_records_every_observation_time(n_obs, steps_per_unit):
     curve = coarse.mean_curve(theta)
     assert curve.shape == (2, n_obs)
     assert torch.allclose(curve, fine.mean_curve(theta), atol=0.01 * coarse.population)
+
+
+# --------------------------------------------------------------------------- #
+# DirichletMultinomial -- the conjugate benchmark
+# --------------------------------------------------------------------------- #
+#
+# This simulator's whole purpose is that its posterior is exact, so these
+# checks are about the claimed conjugacy actually holding, not just about
+# shapes. If the prior, the forward model and the stated posterior are not
+# mutually consistent, every comparison scored against it is worthless.
+
+
+def test_dirichlet_multinomial_validates_its_arguments():
+    with pytest.raises(ValueError, match="at least 2 categories"):
+        DirichletMultinomial(n_categories=1)
+    with pytest.raises(ValueError, match="n_trials must be positive"):
+        DirichletMultinomial(n_trials=0)
+    with pytest.raises(ValueError, match="concentration must be positive"):
+        DirichletMultinomial(n_categories=3, concentration=-1.0)
+    with pytest.raises(ValueError, match="scalar or length"):
+        DirichletMultinomial(n_categories=3, concentration=[1.0, 2.0])
+
+
+def test_gamma_sampler_has_the_right_mean_and_variance():
+    # Gamma(a, 1) has mean a and variance a; the shape < 1 branch is boosted
+    # separately, so both sides need checking.
+    sim = DirichletMultinomial(dtype=DT)
+    g = torch.Generator().manual_seed(0)
+    for a in (0.3, 1.0, 5.0):
+        x = sim._standard_gamma(torch.full((200_000,), a, dtype=DT), g)
+        assert float(x.mean()) == pytest.approx(a, rel=0.02)
+        assert float(x.var()) == pytest.approx(a, rel=0.05)
+        assert bool((x > 0).all())
+
+
+def test_prior_is_dirichlet():
+    sim = DirichletMultinomial(n_categories=4, concentration=2.0, dtype=DT)
+    theta = sim.sample_prior(200_000, generator=torch.Generator().manual_seed(0))
+    assert theta.shape == (200_000, 3)
+    assert bool((theta > 0).all()) and bool((theta.sum(-1) < 1).all())
+    exact_mean = (sim.alpha / sim.alpha.sum())[:3]
+    assert torch.allclose(theta.mean(0), exact_mean, atol=0.005)
+    assert torch.allclose(theta.std(0), sim.prior_sd(), atol=0.005)
+
+
+def test_simulate_is_multinomial():
+    sim = DirichletMultinomial(n_categories=4, n_trials=50, dtype=DT)
+    probability = torch.tensor([0.5, 0.2, 0.2], dtype=DT)
+    theta = probability.expand(100_000, 3)
+    y = sim.simulate(theta, generator=torch.Generator().manual_seed(0))
+    assert y.shape == (100_000, 4)
+    assert bool((y.sum(-1) == sim.n_trials).all())
+    assert bool((y >= 0).all())
+    full = torch.tensor([0.5, 0.2, 0.2, 0.1], dtype=DT)
+    assert torch.allclose(y.mean(0) / sim.n_trials, full, atol=0.005)
+    expected_sd = (sim.n_trials * full * (1 - full)).sqrt()
+    assert torch.allclose(y.std(0), expected_sd, rtol=0.05)
+
+
+def test_posterior_is_exactly_dirichlet_alpha_plus_y():
+    """The conjugacy claim, checked against brute-force importance sampling."""
+    sim = DirichletMultinomial(n_categories=4, n_trials=50, concentration=2.0, dtype=DT)
+    g = torch.Generator().manual_seed(1)
+    _, y_obs = sim.sample_joint(1, generator=g)
+    mean, cov = _importance_posterior(sim, y_obs[0], n=500_000, seed=2)
+    assert torch.allclose(mean, sim.posterior_mean(y_obs)[0], atol=0.004)
+    assert torch.allclose(cov.diagonal().sqrt(), sim.posterior_sd(y_obs)[0], atol=0.004)
+
+
+def test_exact_posterior_sampler_matches_the_exact_moments():
+    sim = DirichletMultinomial(n_categories=5, n_trials=40, dtype=DT)
+    g = torch.Generator().manual_seed(3)
+    _, y_obs = sim.sample_joint(2, generator=g)
+    draws = sim.sample_posterior(y_obs, 200_000, generator=g)
+    assert draws.shape == (2, 200_000, 4)
+    assert bool((draws > 0).all()) and bool((draws.sum(-1) < 1).all())
+    assert torch.allclose(draws.mean(1), sim.posterior_mean(y_obs), atol=0.004)
+    assert torch.allclose(draws.std(1), sim.posterior_sd(y_obs), atol=0.004)
+
+
+def test_marginal_beta_parameters_match_the_marginal_moments():
+    sim = DirichletMultinomial(n_categories=4, n_trials=30, dtype=DT)
+    g = torch.Generator().manual_seed(4)
+    _, y_obs = sim.sample_joint(3, generator=g)
+    for j in range(sim.theta_dim):
+        a, b = sim.marginal_beta(y_obs, j)
+        mean = a / (a + b)
+        sd = (a * b / ((a + b) ** 2 * (a + b + 1))).sqrt()
+        assert torch.allclose(mean, sim.posterior_mean(y_obs)[:, j], atol=1e-10)
+        assert torch.allclose(sd, sim.posterior_sd(y_obs)[:, j], atol=1e-10)
+
+
+def test_more_trials_concentrate_the_posterior():
+    """n_trials is the concentration knob the regime sweep relies on."""
+    previous = None
+    for n_trials in (5, 50, 500):
+        sim = DirichletMultinomial(n_categories=4, n_trials=n_trials, dtype=DT)
+        g = torch.Generator().manual_seed(5)
+        _, y_obs = sim.sample_joint(64, generator=g)
+        spread = float(sim.posterior_sd(y_obs).mean())
+        if previous is not None:
+            assert spread < previous
+        previous = spread
+
+
+def test_log_prior_and_log_likelihood_reject_points_off_the_simplex():
+    sim = DirichletMultinomial(n_categories=3, n_trials=10, dtype=DT)
+    outside = torch.tensor([[0.7, 0.8]], dtype=DT)  # sums above one
+    y = torch.tensor([3.0, 3.0, 4.0], dtype=DT)
+    assert float(sim.log_prior(outside)[0]) == -math.inf
+    assert float(sim.log_likelihood(outside, y)[0]) == -math.inf
+    inside = torch.tensor([[0.3, 0.3]], dtype=DT)
+    assert math.isfinite(float(sim.log_prior(inside)[0]))
+    assert math.isfinite(float(sim.log_likelihood(inside, y)[0]))

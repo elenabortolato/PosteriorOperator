@@ -27,7 +27,16 @@ from typing import Optional, Tuple
 import torch
 from torch import Tensor
 
-__all__ = ["Simulator", "GaussianLinear", "MA2", "AR2", "GAndK", "SIR", "SumIdentified"]
+__all__ = [
+    "Simulator",
+    "GaussianLinear",
+    "MA2",
+    "AR2",
+    "GAndK",
+    "SIR",
+    "SumIdentified",
+    "DirichletMultinomial",
+]
 
 _LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
 
@@ -795,3 +804,181 @@ class SIR(Simulator):
     def basic_reproduction_number_range(self) -> Tuple[float, float]:
         r"""The range of :math:`R_0 = \beta/\gamma` implied by the prior box."""
         return (self.beta_range[0] / self.gamma_range[1], self.beta_range[1] / self.gamma_range[0])
+
+
+class DirichletMultinomial(Simulator):
+    r"""``Theta ~ Dirichlet(alpha)``, ``Y ~ Multinomial(n_trials, Theta)``.
+
+    The conjugate benchmark: the posterior is *exactly*
+    :math:`\mathrm{Dirichlet}(\alpha + y)`, in closed form, with no quadrature
+    grid, no MCMC chain and no ABC tolerance. Every quantity an estimator can
+    be scored against -- posterior mean, marginal densities, marginal
+    quantiles, exact draws -- is available to machine precision.
+
+    It is chosen over the Gaussian conjugate model deliberately. A Gaussian
+    posterior is exactly what a mixture-density network represents, so
+    comparing against NPE on ``GaussianLinear`` hands NPE a correctly specified
+    model and measures little. Here the posterior lives on the simplex, its
+    marginals are Beta and therefore skewed and bounded, and neither method's
+    hypothesis class contains the truth.
+
+    Parameterisation: :math:`\theta` is the first ``n_categories - 1``
+    simplex coordinates, the last being determined by the constraint, so
+    ``theta_dim = n_categories - 1`` and the prior is non-degenerate. The
+    observation is the full count vector, ``data_dim = n_categories``.
+
+    Two knobs matter for the comparison, and they are independent:
+
+    * ``n_categories`` sets the dimension of the parameter -- the axis on which
+      an atom-reweighting estimator is expected to struggle, since the fraction
+      of prior draws landing near the posterior falls geometrically in it.
+    * ``n_trials`` sets posterior concentration, and so :math:`\chi^2`, the
+      quantity that governs how much rank the operator needs.
+
+    Args:
+        n_categories: number of multinomial cells.
+        n_trials: multinomial sample size, i.e. how informative one dataset is.
+        concentration: the Dirichlet prior parameter, scalar (symmetric) or a
+            vector of length ``n_categories``.
+    """
+
+    def __init__(
+        self,
+        n_categories: int = 4,
+        n_trials: int = 50,
+        concentration: float = 2.0,
+        **kw,
+    ):
+        super().__init__(**kw)
+        if n_categories < 2:
+            raise ValueError(f"need at least 2 categories, got {n_categories}")
+        if n_trials < 1:
+            raise ValueError(f"n_trials must be positive, got {n_trials}")
+        self.n_categories = int(n_categories)
+        self.n_trials = int(n_trials)
+        alpha = torch.as_tensor(concentration, dtype=self.dtype)
+        if alpha.ndim == 0:
+            alpha = alpha.expand(self.n_categories).clone()
+        if alpha.shape != (self.n_categories,):
+            raise ValueError(f"concentration must be scalar or length {self.n_categories}")
+        if bool((alpha <= 0).any()):
+            raise ValueError("concentration must be positive")
+        self.alpha = alpha
+        self.theta_dim = self.n_categories - 1
+        self.data_dim = self.n_categories
+
+    # --- simulation --------------------------------------------------------
+
+    def _full_simplex(self, theta: Tensor) -> Tensor:
+        """Restore the dropped last coordinate, shape ``(n, n_categories)``."""
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, self.theta_dim)
+        last = (1.0 - theta.sum(dim=-1, keepdim=True)).clamp_min(0.0)
+        return torch.cat([theta, last], dim=-1)
+
+    def sample_prior(self, n: int, generator: Optional[torch.Generator] = None) -> Tensor:
+        # Dirichlet by the Gamma construction, so it honours `generator`.
+        gamma = self._standard_gamma(self.alpha.expand(n, self.n_categories), generator)
+        simplex = gamma / gamma.sum(dim=-1, keepdim=True)
+        return simplex[:, : self.theta_dim]
+
+    def _standard_gamma(self, shape: Tensor, generator: Optional[torch.Generator]) -> Tensor:
+        r"""Marsaglia-Tsang draws from ``Gamma(shape, 1)``, honouring ``generator``."""
+        shape = shape.to(self.dtype)
+        boost = shape < 1.0
+        a = torch.where(boost, shape + 1.0, shape)
+        d = a - 1.0 / 3.0
+        c = 1.0 / torch.sqrt(9.0 * d)
+        out = torch.zeros_like(a)
+        pending = torch.ones_like(a, dtype=torch.bool)
+        for _ in range(64):
+            if not bool(pending.any()):
+                break
+            x = torch.randn(a.shape, generator=generator, dtype=self.dtype)
+            v = (1.0 + c * x) ** 3
+            u = torch.rand(a.shape, generator=generator, dtype=self.dtype)
+            ok = (v > 0) & (torch.log(u) < 0.5 * x**2 + d - d * v + d * torch.log(v.clamp_min(1e-30)))
+            take = ok & pending
+            out = torch.where(take, d * v, out)
+            pending = pending & ~take
+        out = out.clamp_min(torch.finfo(self.dtype).tiny)
+        # Boost back the shape < 1 entries: G(a) = G(a+1) * U^(1/a).
+        u = torch.rand(a.shape, generator=generator, dtype=self.dtype).clamp_min(1e-30)
+        return torch.where(boost, out * u ** (1.0 / shape.clamp_min(1e-30)), out)
+
+    def simulate(self, theta: Tensor, generator: Optional[torch.Generator] = None) -> Tensor:
+        probabilities = self._full_simplex(theta)
+        counts = torch.zeros_like(probabilities)
+        # Sequential binomial conditioning: cell j given what is left.
+        remaining = torch.full((probabilities.shape[0],), float(self.n_trials), dtype=self.dtype)
+        left = torch.ones(probabilities.shape[0], dtype=self.dtype)
+        for j in range(self.n_categories - 1):
+            rate = (probabilities[:, j] / left.clamp_min(1e-12)).clamp(0.0, 1.0)
+            counts[:, j] = self._binomial(remaining, rate, generator)
+            remaining = remaining - counts[:, j]
+            left = (left - probabilities[:, j]).clamp_min(0.0)
+        counts[:, -1] = remaining
+        return counts
+
+    def _binomial(self, n: Tensor, p: Tensor, generator: Optional[torch.Generator]) -> Tensor:
+        """Binomial draws by summing Bernoullis; ``n`` is constant per column here."""
+        total = int(n.max()) if n.numel() else 0
+        if total == 0:
+            return torch.zeros_like(n)
+        uniform = torch.rand(n.shape[0], total, generator=generator, dtype=self.dtype)
+        index = torch.arange(total, dtype=self.dtype).unsqueeze(0)
+        active = index < n.unsqueeze(-1)
+        return ((uniform < p.unsqueeze(-1)) & active).sum(dim=-1).to(self.dtype)
+
+    # --- exact reference quantities ---------------------------------------
+
+    def posterior_concentration(self, y_obs: Tensor) -> Tensor:
+        r"""The exact posterior parameter :math:`\alpha + y`, shape ``(n, K)``."""
+        y = torch.as_tensor(y_obs, dtype=self.dtype).reshape(-1, self.n_categories)
+        return self.alpha.unsqueeze(0) + y
+
+    def posterior_mean(self, y_obs: Tensor) -> Tensor:
+        r"""Exact :math:`E[\Theta \mid Y=y]`, shape ``(n, theta_dim)``."""
+        a = self.posterior_concentration(y_obs)
+        return (a / a.sum(dim=-1, keepdim=True))[:, : self.theta_dim]
+
+    def posterior_sd(self, y_obs: Tensor) -> Tensor:
+        r"""Exact marginal standard deviations, shape ``(n, theta_dim)``."""
+        a = self.posterior_concentration(y_obs)
+        total = a.sum(dim=-1, keepdim=True)
+        mean = a / total
+        variance = mean * (1.0 - mean) / (total + 1.0)
+        return variance.sqrt()[:, : self.theta_dim]
+
+    def marginal_beta(self, y_obs: Tensor, coordinate: int) -> Tuple[Tensor, Tensor]:
+        r"""Exact Beta parameters of one marginal: :math:`(\alpha_j, \alpha_0-\alpha_j)`."""
+        a = self.posterior_concentration(y_obs)
+        return a[:, coordinate], a.sum(dim=-1) - a[:, coordinate]
+
+    def sample_posterior(
+        self, y_obs: Tensor, n_samples: int, generator: Optional[torch.Generator] = None
+    ) -> Tensor:
+        r"""Exact posterior draws, shape ``(n_obs, n_samples, theta_dim)``."""
+        a = self.posterior_concentration(y_obs)
+        shape = a.unsqueeze(1).expand(a.shape[0], n_samples, self.n_categories)
+        gamma = self._standard_gamma(shape.reshape(-1, self.n_categories), generator)
+        simplex = gamma / gamma.sum(dim=-1, keepdim=True)
+        return simplex.reshape(a.shape[0], n_samples, self.n_categories)[..., : self.theta_dim]
+
+    def prior_sd(self) -> Tensor:
+        """Marginal prior standard deviations, shape ``(theta_dim,)``."""
+        total = self.alpha.sum()
+        mean = self.alpha / total
+        return (mean * (1.0 - mean) / (total + 1.0)).sqrt()[: self.theta_dim]
+
+    def log_prior(self, theta: Tensor) -> Tensor:
+        full = self._full_simplex(theta)
+        inside = (full > 0).all(dim=-1)
+        log_density = ((self.alpha - 1.0) * torch.log(full.clamp_min(1e-30))).sum(dim=-1)
+        return torch.where(inside, log_density, torch.full_like(log_density, -math.inf))
+
+    def log_likelihood(self, theta: Tensor, y_obs: Tensor) -> Tensor:
+        full = self._full_simplex(theta)
+        y = torch.as_tensor(y_obs, dtype=self.dtype).reshape(1, self.n_categories)
+        inside = (full > 0).all(dim=-1)
+        log_density = (y * torch.log(full.clamp_min(1e-30))).sum(dim=-1)
+        return torch.where(inside, log_density, torch.full_like(log_density, -math.inf))
