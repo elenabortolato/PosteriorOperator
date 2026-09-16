@@ -179,6 +179,126 @@ interval spans the valley (width 2.99); the HDR splits into two pieces
 
 ---
 
+# Likelihood-free posterior functionals
+
+`posterior_operator.lfi` specialises the operator to simulation-based
+inference, following *Likelihood-Free Posterior Functional Inference — train
+once, ask whatever next* (Bortolato, 2026). The joint law is the prior
+predictive ρ = π ⊗ p(·|θ), the conditioning variable is the **data** and the
+response is the **parameter**, so
+
+$$
+\frac{p(\theta \mid y)}{\pi(\theta)} = 1 + \sum_{k=1}^{d} \sigma_k\, u_k(y)\, v_k(\theta),
+\qquad
+\widehat{T}_f(y_0) = \tfrac1n \textstyle\sum_i f(\theta_i)
+  + \sum_k \hat\sigma_k \hat u_k(y_0)\big[\tfrac1n \sum_i \hat v_k(\theta_i) f(\theta_i)\big].
+$$
+
+That estimator is a weighted average over the prior draws with masses
+$w_i(y_0) = \frac1n(1 + \hat r(y_0, \theta_i))$, so every posterior functional,
+CDF, credible region and Bayes action is a statistic of one reweighted prior
+sample — computed without ever evaluating $p(y \mid \theta)$.
+
+```python
+import torch
+from posterior_operator import PosteriorOperator
+from posterior_operator.simulators import MA2
+
+sim = MA2(n_timesteps=50)
+theta, y = sim.sample_joint(40000, generator=torch.Generator().manual_seed(0))
+
+op = PosteriorOperator(theta_dim=2, data_dim=sim.data_dim, rank=48)
+op.fit(theta, y, epochs=500)                 # once
+
+post = op.posterior(y[:10])                  # then ask anything
+post.functional(lambda t: t**2)              # any f, chosen after training
+post.probability(lambda t: t[:, 0] > 0)      # P(theta in B | y)
+post.credible_interval(0.05, coordinate=0)   # from the CDF
+post.marginal_histogram(0, bins=20)          # nuisance coordinate marginalised
+post.bayes_action(loss, actions)             # decision-theoretic target
+post.reweight(log_pi - log_q)                # change the prior, no refit
+
+op.maximal_correlation                       # sigma_1 = HGR maximal correlation
+op.chi2_divergence                           # sum sigma_k^2 = chi^2(rho || pi x mu)
+```
+
+**Signed vs clipped masses.** A density-*ratio* estimate can go negative.
+Moment-type queries (`functional`, `mean`, `covariance`, `probability`,
+`posterior_risk`) use the masses as they come, which makes them the estimator
+above verbatim. Order-statistic queries (`quantile`, `cdf`,
+`credible_interval`, `sample`, `marginal_histogram`) need a genuine probability
+measure and clip internally; `as_probability()` exposes it. This matters: on an
+MA(2) fit where the posterior is 5× tighter than the prior, clipping up front
+inflates the reported standard deviation by 3.6× instead of 1.6×.
+
+## Simulators with exact references
+
+| simulator | reference available |
+| --- | --- |
+| `GaussianLinear` | closed-form posterior, canonical correlations, **and** the exact $L^2$ spectrum |
+| `MA2` | exact banded-Gaussian likelihood → reference posterior by quadrature |
+| `SumIdentified` | closed-form posterior; only $\theta_1+\theta_2$ identified; exact $\sigma_1$ |
+
+## LFI examples
+
+| script | what it shows |
+| --- | --- |
+| `lfi/01_gaussian_operator_exact.py` | CCA reconstruction; the exact Hermite spectrum; what rank-$d$ truncation really costs |
+| `lfi/02_amortized_functionals.py` | 11 functionals from one fit, each scored against quadrature |
+| `lfi/03_prior_retargeting.py` | change the prior after training; ESS; comparison against a refit |
+| `lfi/04_identifiability.py` | $\sigma_1$ and $v_1$ as identifiability diagnostics; the compactness warning; rank vs concentration |
+
+## What the experiments say
+
+Three things reproduce cleanly and are worth carrying into a write-up.
+
+**The diagnostics are sharp.** On `SumIdentified`, $\hat\sigma_1 = 0.9758$
+against an exact 0.9759, and $\hat v_1$ recovers the identified direction
+$(1,1)/\sqrt2$ to $|\cos| = 1.0000$ — without being told which direction was
+identified. The posterior standard deviation comes out 0.2170 along it
+(exact 0.2182) and 1.0011 along the orthogonal direction (exact 1.0000, the
+untouched prior). Shrinking the observation noise drives $\hat\sigma_1 \to 1$ in
+lockstep with the closed form, so the compactness warning fires on cue.
+
+**Amortization works, and moments are the strong suit.** One MA(2) fit answers
+mean, second and cross moments, three event probabilities, a posterior risk, a
+covariance, marginal histograms, quantiles, an interval and a Bayes action — the
+last matching the exact 0.25-quantile it should. Event probabilities land within
+0.06–0.11 of quadrature. Tail quantiles are the weak suit: the 90% intervals are
+valid but 2–4× too wide.
+
+**The truncation rank is governed by posterior concentration, not by
+$\mathrm{rank}(\Sigma_{\Theta Y})$.** As an MA(2) series grows from 5 to 50
+observations the posterior tightens from 1.4× to 4.7× the prior, and the
+reported spread degrades from 1.18× to 1.63× the truth. Raising the rank from
+64 to 256 barely moves it (4.09 → 4.01 clipped), so at these budgets the limit
+is optimisation, not the spectrum. Posterior *location* stays accurate
+throughout.
+
+Two claims did **not** survive testing, both worth knowing before relying on
+them:
+
+- **Rank-$r^*$ exactness in the Gaussian case.** A jointly Gaussian pair has a
+  rank-$r^*$ cross-covariance but *infinitely many* non-zero singular values:
+  the operator is diagonal in the Hermite tensor basis with
+  $\sigma_a = \prod_i \rho_i^{a_i}$ (verified by quadrature to $4 \times
+  10^{-16}$). Because the top-$d$ directions are ordered by singular value, a
+  *nonlinear* direction of a strongly correlated pair can outrank a weakly
+  correlated *linear* one. With $\rho = (0.966, 0.917, 0.787)$ the third linear
+  direction sits at spectral position **14**, so rank-3 truncation misses part
+  of $\mathbb{E}[\Theta\mid Y]$. The sharp statement is
+  $d \ge \#\{a \neq 0 : \prod_i \rho_i^{a_i} \ge \rho_{r^*}\}$, which collapses
+  to $d \ge r^*$ exactly when $\rho_1^2 < \rho_{r^*}$.
+- **Prior retargeting as a free lunch.** The self-normalised identity is exact
+  in population, but the weights multiply the *estimated* proposal posterior, so
+  the error interacts with them instead of cancelling. Retargeting a flat-prior
+  MA(2) fit to a concentrated prior gives mean error 0.31, against 0.11 for a
+  refit under that prior at equal simulation budget. Retargeting is free of
+  *retraining*, not of *error* — which is an argument for folding the weights
+  into the training objective rather than correcting afterwards.
+
+---
+
 ## Practical notes
 
 Two things are worth knowing before tuning, both measured rather than assumed.
@@ -226,8 +346,11 @@ posterior_operator/
   training.py    dependency-free training loop with early stopping
   data.py        four synthetic generators with closed-form ground truth
   metrics.py     Hellinger, TV, KL, JS, KS, W1, coverage, pinball
-tests/           135 tests; run with `pytest`
-examples/        the four scripts above
+  lfi.py         PosteriorOperator / PosteriorSample: posterior functionals, retargeting
+  simulators.py  GaussianLinear, MA2, SumIdentified, with exact references
+tests/           211 tests; run with `pytest`
+examples/        general conditional-density scripts
+examples/lfi/    the likelihood-free scripts
 ```
 
 Tests pin the objective against a finite joint distribution where $r$ and every

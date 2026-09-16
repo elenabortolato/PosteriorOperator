@@ -1,0 +1,351 @@
+"""The likelihood-free simulators and their exact reference quantities.
+
+The reference quantities are what every posterior-functional estimate is later
+scored against, so they are cross-checked here against independent computations
+(importance sampling from the prior, closed-form Gaussian algebra, quadrature).
+"""
+
+import math
+
+import pytest
+import torch
+
+from posterior_operator.simulators import MA2, GaussianLinear, SumIdentified
+
+DT = torch.float64
+
+
+def _importance_posterior(sim, y_obs, n=200_000, seed=0):
+    """Brute-force posterior by importance sampling from the prior.
+
+    The draws already come from the prior, so the importance weights are the
+    likelihood alone -- multiplying by the prior again would target pi^2 L and,
+    for a Gaussian prior, halve its variance.
+    """
+    g = torch.Generator().manual_seed(seed)
+    theta = sim.sample_prior(n, generator=g)
+    weights = torch.softmax(sim.log_likelihood(theta, y_obs).double(), dim=0)
+    mean = (weights.unsqueeze(-1) * theta.double()).sum(0)
+    centred = theta.double() - mean
+    cov = (weights.unsqueeze(-1) * centred).T @ centred
+    return mean, cov
+
+
+# --------------------------------------------------------------------------- #
+# Shared interface
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(
+    params=[
+        lambda: GaussianLinear(theta_dim=2, data_dim=3, noise=0.5, seed=0, dtype=DT),
+        lambda: MA2(n_timesteps=20, summaries=True, n_lags=3, dtype=DT),
+        lambda: SumIdentified(n_obs=8, noise=1.0, dtype=DT),
+    ]
+)
+def simulator(request):
+    return request.param()
+
+
+def test_sample_joint_shapes_and_finiteness(simulator):
+    theta, y = simulator.sample_joint(256, generator=torch.Generator().manual_seed(0))
+    assert theta.shape == (256, simulator.theta_dim)
+    assert y.shape == (256, simulator.data_dim)
+    assert torch.isfinite(theta).all() and torch.isfinite(y).all()
+
+
+def test_sampling_is_reproducible(simulator):
+    first = simulator.sample_joint(64, generator=torch.Generator().manual_seed(7))
+    second = simulator.sample_joint(64, generator=torch.Generator().manual_seed(7))
+    assert torch.allclose(first[0], second[0]) and torch.allclose(first[1], second[1])
+
+
+def test_base_class_methods_are_abstract():
+    from posterior_operator.simulators import Simulator
+
+    base = Simulator()
+    for call in (lambda: base.sample_prior(4), lambda: base.simulate(torch.zeros(4, 1))):
+        with pytest.raises(NotImplementedError):
+            call()
+
+
+# --------------------------------------------------------------------------- #
+# GaussianLinear
+# --------------------------------------------------------------------------- #
+
+
+def test_gaussian_posterior_matches_the_precision_form():
+    """Cross-check the covariance form against the independent precision form.
+
+    mean = Sigma_ThetaY Sigma_YY^-1 y versus mean = Lambda^-1 A^T y / sigma^2
+    with Lambda = Sigma_theta^-1 + A^T A / sigma^2. Equal by Woodbury, so
+    agreement to machine precision tests the implementation, not the identity.
+    """
+    sim = GaussianLinear(theta_dim=2, data_dim=3, noise=0.5, seed=1, dtype=DT)
+    _, y = sim.sample_joint(8, generator=torch.Generator().manual_seed(2))
+    precision = torch.linalg.inv(sim.prior_cov) + sim.design.T @ sim.design / sim.noise**2
+    cov_from_precision = torch.linalg.inv(precision)
+    mean_from_precision = (cov_from_precision @ sim.design.T @ y.T / sim.noise**2).T
+    assert torch.allclose(sim.posterior_cov(), cov_from_precision, atol=1e-10)
+    assert torch.allclose(sim.posterior_mean(y), mean_from_precision, atol=1e-10)
+
+
+def test_gaussian_posterior_agrees_with_importance_sampling():
+    """End-to-end sanity check against brute force, averaged over observations."""
+    sim = GaussianLinear(theta_dim=2, data_dim=3, noise=0.5, seed=1, dtype=DT)
+    _, y = sim.sample_joint(4, generator=torch.Generator().manual_seed(2))
+    for i in range(4):
+        mean, cov = _importance_posterior(sim, y[i], n=400_000, seed=i)
+        assert torch.allclose(sim.posterior_mean(y[i : i + 1])[0], mean, atol=0.05)
+        assert torch.allclose(sim.posterior_cov(), cov, atol=0.05)
+
+
+def test_gaussian_canonical_correlations_are_in_unit_interval():
+    sim = GaussianLinear(theta_dim=3, data_dim=5, noise=0.5, seed=0, dtype=DT)
+    rho = sim.canonical_correlations()
+    assert rho.shape == (3,)
+    assert torch.all(rho > 0) and torch.all(rho < 1)
+    assert torch.all(rho[:-1] >= rho[1:])
+
+
+def test_gaussian_posterior_covariance_shrinks_the_prior():
+    sim = GaussianLinear(theta_dim=3, data_dim=5, noise=0.5, seed=0, dtype=DT)
+    gap = sim.prior_cov - sim.posterior_cov()
+    # Data can only reduce uncertainty, so the difference is PSD.
+    assert torch.all(torch.linalg.eigvalsh(gap) > -1e-10)
+
+
+def test_gaussian_design_shape_is_validated():
+    with pytest.raises(ValueError, match="design must be"):
+        GaussianLinear(theta_dim=2, data_dim=3, design=torch.zeros(3, 4))
+
+
+# --- the exact L^2 spectrum ------------------------------------------------- #
+
+
+def test_exact_spectrum_is_the_hermite_product_system():
+    r"""sigma_a = prod_i rho_i^{a_i}, sorted, with the canonical rho as |a| = 1."""
+    sim = GaussianLinear(theta_dim=2, data_dim=3, noise=0.6, seed=4, dtype=DT)
+    rho = sim.canonical_correlations().tolist()
+    values, indices = sim.exact_spectrum(max_order=12)
+
+    assert len(values) == len(indices)
+    assert torch.all(values[:-1] >= values[1:])  # sorted
+    for value, index in zip(values.tolist()[:40], indices[:40]):
+        assert value == pytest.approx(math.prod(r**a for r, a in zip(rho, index)), rel=1e-10)
+    # The canonical correlations are exactly the first-order multi-indices.
+    first_order = sorted(
+        (v for v, a in zip(values.tolist(), indices) if sum(a) == 1), reverse=True
+    )
+    assert first_order == pytest.approx(sorted(rho, reverse=True), rel=1e-10)
+    # And the top value is the largest canonical correlation.
+    assert float(values[0]) == pytest.approx(max(rho), rel=1e-12)
+
+
+def test_scalar_gaussian_operator_is_diagonal_in_the_hermite_basis():
+    r"""Quadrature check that sigma_k = rho^k, the basis of :meth:`exact_spectrum`."""
+    rho, order, n_quad = 0.75, 6, 60
+    import numpy as np
+
+    nodes, wts = np.polynomial.hermite_e.hermegauss(n_quad)
+    nodes = torch.tensor(nodes, dtype=DT)
+    wts = torch.tensor(wts, dtype=DT) / math.sqrt(2 * math.pi)
+    a, b = torch.meshgrid(nodes, nodes, indexing="ij")
+    wa, wb = torch.meshgrid(wts, wts, indexing="ij")
+    quad = (wa * wb).reshape(-1)
+    theta = a.reshape(-1)
+    y = (rho * a + math.sqrt(1 - rho**2) * b).reshape(-1)
+
+    def hermite(x):
+        out = [torch.ones_like(x), x]
+        for j in range(1, order):
+            out.append((x * out[j] - math.sqrt(j) * out[j - 1]) / math.sqrt(j + 1))
+        return out[: order + 1]
+
+    h_theta, h_y = hermite(theta), hermite(y)
+    matrix = torch.stack(
+        [torch.stack([(quad * h_y[i] * h_theta[j]).sum() for j in range(order + 1)]) for i in range(order + 1)]
+    )
+    diag = torch.diagonal(matrix)
+    assert torch.allclose(diag, torch.tensor([rho**k for k in range(order + 1)], dtype=DT), atol=1e-10)
+    assert float((matrix - torch.diag(diag)).abs().max()) < 1e-10
+
+
+def test_linear_directions_can_be_outranked_by_nonlinear_ones():
+    """rank(Sigma_ThetaY) does not bound the rank needed for E[Theta|Y].
+
+    When rho_1^2 exceeds the weakest canonical correlation, the squared Hermite
+    direction of the first canonical pair outranks a *linear* direction, so the
+    rank-r* truncation drops part of the posterior mean.
+    """
+    # rho_1^2 > rho_2: the linear direction e_2 gets pushed down the spectrum.
+    sim = _gaussian_with_correlations([0.95, 0.5])
+    ranks = sim.linear_direction_ranks(max_order=30)
+    assert ranks[0] == 1
+    assert ranks[1] > 2, "e_2 should be outranked by (2, 0)"
+    assert sim.truncation_error_posterior_mean(2) > 0.4
+    assert sim.truncation_error_posterior_mean(max(ranks)) == 0.0
+
+    # rho_1^2 < rho_2: now the two linear directions do come first.
+    sim = _gaussian_with_correlations([0.6, 0.5])
+    assert sim.linear_direction_ranks(max_order=30) == [1, 2]
+    assert sim.truncation_error_posterior_mean(2) == 0.0
+
+
+def test_truncation_error_decreases_and_reaches_zero():
+    sim = _gaussian_with_correlations([0.9, 0.6, 0.3])
+    errors = [sim.truncation_error_posterior_mean(d) for d in range(1, 40)]
+    assert all(later <= earlier + 1e-12 for earlier, later in zip(errors, errors[1:]))
+    assert errors[-1] == 0.0
+    assert errors[0] > 0.0
+
+
+def _gaussian_with_correlations(rho):
+    r"""A :class:`GaussianLinear` whose canonical correlations are exactly ``rho``.
+
+    With a diagonal design ``A = diag(a)``, unit prior and unit noise, the
+    canonical correlations are ``a_i / sqrt(a_i^2 + 1)``, so invert that.
+    """
+    scale = [r / math.sqrt(1 - r**2) for r in rho]
+    design = torch.diag(torch.tensor(scale, dtype=DT))
+    sim = GaussianLinear(theta_dim=len(rho), data_dim=len(rho), noise=1.0, design=design, dtype=DT)
+    assert torch.allclose(sim.canonical_correlations(), torch.tensor(sorted(rho, reverse=True), dtype=DT), atol=1e-10)
+    return sim
+
+
+# --------------------------------------------------------------------------- #
+# MA2
+# --------------------------------------------------------------------------- #
+
+
+def test_ma2_prior_lives_on_the_invertibility_triangle():
+    sim = MA2(n_timesteps=20, dtype=DT)
+    theta = sim.sample_prior(4000, generator=torch.Generator().manual_seed(0))
+    assert bool(MA2.in_support(theta).all())
+    # Vertices (-2, 1), (2, 1), (0, -1): area 4, inside a bounding box of area 8.
+    box = torch.stack([4 * torch.rand(40_000, dtype=DT) - 2, 2 * torch.rand(40_000, dtype=DT) - 1], dim=-1)
+    assert float(MA2.in_support(box).to(DT).mean()) == pytest.approx(0.5, abs=0.02)
+
+
+def test_ma2_simulated_autocovariance_matches_the_theoretical_one():
+    sim = MA2(n_timesteps=4000, summaries=False, dtype=DT)
+    theta = torch.tensor([[0.6, -0.3]], dtype=DT)
+    series = sim.simulate(theta.expand(400, 2).contiguous(), generator=torch.Generator().manual_seed(0))
+    t1, t2 = 0.6, -0.3
+    expected = [1 + t1**2 + t2**2, t1 + t1 * t2, t2, 0.0]
+    centred = series - series.mean(dim=-1, keepdim=True)
+    for lag, want in enumerate(expected):
+        got = float((centred[:, lag:] * centred[:, : centred.shape[1] - lag]).mean())
+        assert got == pytest.approx(want, abs=0.05)
+
+
+def test_ma2_summaries_have_the_declared_dimension():
+    sim = MA2(n_timesteps=30, summaries=True, n_lags=5, dtype=DT)
+    assert sim.data_dim == 6
+    _, y = sim.sample_joint(16, generator=torch.Generator().manual_seed(0))
+    assert y.shape == (16, 6)
+
+
+def test_ma2_likelihood_needs_the_raw_series():
+    sim = MA2(n_timesteps=20, summaries=True, dtype=DT)
+    with pytest.raises(NotImplementedError, match="raw series"):
+        sim.log_likelihood(torch.zeros(2, 2, dtype=DT), torch.zeros(20, dtype=DT))
+
+
+def test_ma2_likelihood_is_minus_inf_outside_the_triangle():
+    sim = MA2(n_timesteps=20, summaries=False, dtype=DT)
+    outside = torch.tensor([[3.0, 0.0], [0.0, -2.0]], dtype=DT)
+    assert torch.all(torch.isinf(sim.log_likelihood(outside, torch.zeros(20, dtype=DT))))
+
+
+def test_ma2_likelihood_matches_a_direct_gaussian_evaluation():
+    """Cross-check the chunked Cholesky against an explicit multivariate normal."""
+    sim = MA2(n_timesteps=12, summaries=False, dtype=DT)
+    theta = torch.tensor([[0.5, 0.2], [-0.4, 0.3]], dtype=DT)
+    y = torch.randn(12, generator=torch.Generator().manual_seed(0), dtype=DT)
+    got = sim.log_likelihood(theta, y, chunk_size=1)
+    for i in range(2):
+        cov = sim._covariance(theta[i : i + 1])[0]
+        dist = torch.distributions.MultivariateNormal(torch.zeros(12, dtype=DT), covariance_matrix=cov)
+        assert float(got[i]) == pytest.approx(float(dist.log_prob(y)), rel=1e-10)
+
+
+def test_ma2_grid_posterior_is_a_normalised_measure_on_the_triangle():
+    sim = MA2(n_timesteps=30, summaries=False, dtype=DT)
+    theta, series = sim.sample_joint(1, generator=torch.Generator().manual_seed(3))
+    grid, weights = sim.grid_posterior(series[0], resolution=80)
+    assert grid.shape == (80 * 80, 2)
+    assert float(weights.sum()) == pytest.approx(1.0, abs=1e-6)
+    assert torch.all(weights >= 0)
+    assert float(weights[~MA2.in_support(grid)].sum()) == pytest.approx(0.0, abs=1e-12)
+    # It should concentrate somewhere near the parameter that generated the data.
+    posterior_mean = (weights.unsqueeze(-1) * grid).sum(0)
+    assert float((posterior_mean - theta[0]).abs().max()) < 0.6
+
+
+def test_ma2_grid_posterior_respects_a_supplied_prior():
+    sim = MA2(n_timesteps=30, summaries=False, dtype=DT)
+    _, series = sim.sample_joint(1, generator=torch.Generator().manual_seed(4))
+    grid, flat = sim.grid_posterior(series[0], resolution=80)
+    # A prior supported only on theta_2 > 0 must move all the mass there.
+    restricted = torch.where(grid[:, 1] > 0, torch.zeros(grid.shape[0], dtype=DT), torch.full((grid.shape[0],), -math.inf, dtype=DT))
+    _, tilted = sim.grid_posterior(series[0], resolution=80, log_prior=restricted)
+    assert float(tilted[grid[:, 1] <= 0].sum()) == pytest.approx(0.0, abs=1e-12)
+    assert float(tilted.sum()) == pytest.approx(1.0, abs=1e-6)
+    assert not torch.allclose(flat, tilted)
+
+
+# --------------------------------------------------------------------------- #
+# SumIdentified
+# --------------------------------------------------------------------------- #
+
+
+def test_sum_identified_posterior_solves_the_normal_equations():
+    """Lambda mu = m ybar 1 / sigma^2 exactly, with Lambda = I + (m/sigma^2) 1 1^T."""
+    sim = SumIdentified(n_obs=8, noise=0.7, dtype=DT)
+    _, y = sim.sample_joint(6, generator=torch.Generator().manual_seed(5))
+    mean, cov = sim.posterior_mean_cov(y)
+    ones = torch.ones(2, 1, dtype=DT)
+    precision = torch.eye(2, dtype=DT) + (sim.n_obs / sim.noise**2) * (ones @ ones.T)
+    rhs = (sim.n_obs * y.mean(dim=-1, keepdim=True) / sim.noise**2) * ones.T
+    assert torch.allclose(mean @ precision.T, rhs, atol=1e-10)
+    assert torch.allclose(precision @ cov, torch.eye(2, dtype=DT), atol=1e-10)
+
+
+def test_sum_identified_posterior_agrees_with_importance_sampling():
+    sim = SumIdentified(n_obs=8, noise=1.0, dtype=DT)
+    _, y = sim.sample_joint(4, generator=torch.Generator().manual_seed(5))
+    exact_mean, exact_cov = sim.posterior_mean_cov(y)
+    for i in range(4):
+        mean, cov = _importance_posterior(sim, y[i], n=400_000, seed=i)
+        assert torch.allclose(exact_mean[i], mean, atol=0.05)
+        assert torch.allclose(exact_cov, cov, atol=0.05)
+
+
+def test_sum_identified_leaves_the_orthogonal_direction_at_its_prior():
+    sim = SumIdentified(n_obs=10, noise=1.0, dtype=DT)
+    _, cov = sim.posterior_mean_cov(torch.zeros(1, 10, dtype=DT))
+    unidentified = torch.tensor([1.0, -1.0], dtype=DT) / math.sqrt(2)
+    identified = sim.identified_direction
+    assert float(unidentified @ cov @ unidentified) == pytest.approx(1.0, abs=1e-10)
+    # Precision along the identified direction is 1 + 2 m / sigma^2 = 21.
+    assert float(identified @ cov @ identified) == pytest.approx(1 / 21, rel=1e-10)
+
+
+def test_sum_identified_maximal_correlation_grows_as_noise_shrinks():
+    previous = 0.0
+    for noise in (2.0, 1.0, 0.5, 0.1):
+        value = SumIdentified(n_obs=10, noise=noise, dtype=DT).maximal_correlation()
+        assert 0.0 < value < 1.0
+        assert value > previous
+        previous = value
+    assert SumIdentified(n_obs=10, noise=0.01, dtype=DT).maximal_correlation() > 0.999
+
+
+def test_sum_identified_noise_is_validated():
+    sim = SumIdentified(n_obs=4, noise=1.0, dtype=DT)
+    theta, y = sim.sample_joint(32, generator=torch.Generator().manual_seed(0))
+    # Only the sum enters the likelihood, so permuting the coordinates is a no-op.
+    assert torch.allclose(
+        sim.log_likelihood(theta, y[0]), sim.log_likelihood(theta.flip(-1), y[0]), atol=1e-10
+    )

@@ -51,7 +51,14 @@ from typing import Tuple
 import torch
 from torch import Tensor
 
-__all__ = ["NCPLoss", "ustat_objective", "split_objective", "orthonormality_penalty", "log_fro_penalty"]
+__all__ = [
+    "NCPLoss",
+    "ustat_objective",
+    "split_objective",
+    "orthonormality_penalty",
+    "log_fro_penalty",
+    "centering_penalty",
+]
 
 
 def _check_shapes(u: Tensor, v: Tensor, s: Tensor) -> None:
@@ -146,6 +153,21 @@ def orthonormality_penalty(z: Tensor) -> Tensor:
     return sum_sq_off / (n * (n - 1)) - 2.0 * sq_norms.mean() + d
 
 
+def centering_penalty(z: Tensor) -> Tensor:
+    r"""Squared norm of the empirical mean, :math:`\lVert \frac1n \sum_i z_i \rVert^2`.
+
+    The singular functions of the *deflated* operator are mean zero, so this
+    pushes the embeddings towards that constraint during training. It is
+    optional: the whitening step in
+    :meth:`~posterior_operator.operator.NCPOperator.fit_statistics` subtracts
+    the empirical means exactly afterwards. Adding it with weight 2 reproduces
+    the centering terms of the regulariser written in Bortolato (2026).
+    """
+    if z.ndim != 2:
+        raise ValueError(f"expected a 2D (batch, latent) tensor, got {tuple(z.shape)}")
+    return (z.mean(dim=0) ** 2).sum()
+
+
 def log_fro_penalty(z: Tensor) -> Tensor:
     r"""Metric-deformation penalty :math:`\operatorname{mean}(\lambda^2 - \lambda - \log\lambda)`.
 
@@ -173,6 +195,10 @@ class NCPLoss:
             identified only up to a linear map -- usually still trainable, but
             the whitening step then has to undo a badly scaled basis.
         penalty: ``"orthonormality"`` (default) or ``"log_fro"``.
+        center_weight: weight on :func:`centering_penalty`, relative to
+            ``gamma``. Zero by default, since the whitening step centers
+            exactly after training; set it to ``2.0`` to match the regulariser
+            written in Bortolato (2026).
         generator: optional RNG for the ``"split"`` shuffle, for reproducibility.
     """
 
@@ -184,6 +210,7 @@ class NCPLoss:
         mode: str = "ustat",
         gamma: float = 1e-3,
         penalty: str = "orthonormality",
+        center_weight: float = 0.0,
         generator: torch.Generator | None = None,
     ):
         if mode not in self.MODES:
@@ -192,9 +219,12 @@ class NCPLoss:
             raise ValueError(f"unknown penalty {penalty!r}, expected one of {self.PENALTIES}")
         if gamma < 0:
             raise ValueError(f"gamma must be non-negative, got {gamma}")
+        if center_weight < 0:
+            raise ValueError(f"center_weight must be non-negative, got {center_weight}")
         self.mode = mode
         self.gamma = gamma
         self.penalty = penalty
+        self.center_weight = center_weight
         self.generator = generator
 
     def fit_term(self, u: Tensor, v: Tensor, s: Tensor) -> Tensor:
@@ -204,7 +234,10 @@ class NCPLoss:
 
     def penalty_term(self, u: Tensor, v: Tensor) -> Tensor:
         fn = orthonormality_penalty if self.penalty == "orthonormality" else log_fro_penalty
-        return fn(u) + fn(v)
+        total = fn(u) + fn(v)
+        if self.center_weight > 0:
+            total = total + self.center_weight * (centering_penalty(u) + centering_penalty(v))
+        return total
 
     def parts(self, u: Tensor, v: Tensor, s: Tensor) -> Tuple[Tensor, Tensor]:
         """Return ``(fit_term, penalty_term)`` separately, for diagnostics."""

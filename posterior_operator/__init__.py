@@ -47,29 +47,45 @@ from .data import (
     train_val_split,
 )
 from .inference import ConditionalDistribution, GaussianKDE, isotonic_regression
-from .losses import NCPLoss, orthonormality_penalty, split_objective, ustat_objective
+from .lfi import PosteriorOperator, PosteriorSample, reference_posterior_moments
+from .losses import (
+    NCPLoss,
+    centering_penalty,
+    orthonormality_penalty,
+    split_objective,
+    ustat_objective,
+)
 from .nn import MLP, SingularValues
 from .operator import NCPOperator
+from .simulators import MA2, GaussianLinear, Simulator, SumIdentified
 from .training import train_ncp
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "MA2",
     "MLP",
     "BimodalMixture",
     "ConditionalDistribution",
     "GaussianKDE",
+    "GaussianLinear",
     "Heteroscedastic",
     "LinearGaussian",
     "NCPLoss",
     "NCPOperator",
+    "PosteriorOperator",
+    "PosteriorSample",
     "SingularValues",
+    "Simulator",
     "Standardizer",
     "StudentT",
+    "SumIdentified",
     "SyntheticConditional",
     "build_ncp",
+    "centering_penalty",
     "isotonic_regression",
     "orthonormality_penalty",
+    "reference_posterior_moments",
     "split_objective",
     "train_ncp",
     "train_val_split",
