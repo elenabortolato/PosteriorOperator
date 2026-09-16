@@ -151,7 +151,10 @@ def check_truncation_of_the_posterior_mean() -> None:
             err = sim.truncation_error_posterior_mean(d)
             flag = "  <- exact" if err == 0.0 else ""
             print(f"      d = {d:>3}: {err:.4f}{flag}")
-        print(f"  => exactness needs d >= {needed}, not d >= r* = {rho.numel()}.")
+        if needed == rho.numel():
+            print(f"  => exactness at d >= r* = {rho.numel()}, as the proposition claims.")
+        else:
+            print(f"  => exactness needs d >= {needed}, NOT d >= r* = {rho.numel()}.")
     print()
     print("  The reason: the top-d directions are ordered by singular value, and a")
     print("  nonlinear Hermite direction of a strongly correlated canonical pair")
