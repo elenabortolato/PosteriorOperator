@@ -658,10 +658,17 @@ class SIR(Simulator):
     are a whole epidemic curve, which is the regime where amortising over both
     observations and functionals pays.
 
-    Nothing about the simulator is analytic, but because the mean curve is a
-    deterministic ODE solution and the noise is Gaussian, the likelihood *is*
-    computable -- so a reference posterior is available by quadrature via
-    :meth:`grid_posterior`, and posterior functionals can be scored against it.
+    Because the mean curve is a deterministic ODE solution and the noise is
+    additive Gaussian, the likelihood *is* computable: :math:`y \mid \theta
+    \sim N(\text{mean\_curve}(\theta), \sigma^2 I)`. A reference posterior is
+    therefore available by quadrature via :meth:`grid_posterior`, and posterior
+    functionals can be scored against it.
+
+    That makes this a *mechanistic* simulator, not a likelihood-free one. It is
+    a tractable stand-in, chosen so that a reference exists; genuinely
+    intractable epidemic models are stochastic (a Gillespie / Markov-jump SIR,
+    or partial observation of latent compartments), and for those no reference
+    posterior is available without expensive ABC or MCMC.
 
     The default ``noise`` is chosen so the posterior is about five times tighter
     than the prior, which is a realistic reporting-noise regime. Lowering it

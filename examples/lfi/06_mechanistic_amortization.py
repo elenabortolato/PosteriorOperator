@@ -1,10 +1,22 @@
 """The amortization claim on a mechanistic simulator, against both baselines.
 
 An SIR epidemic model: infected counts observed over 30 days under Gaussian
-noise, with (beta, gamma) unknown. The data are a whole epidemic curve, the
-simulator is an ODE, and nothing about it is analytic -- but because the mean
-curve is deterministic and the noise is Gaussian, an exact reference posterior
-is available by quadrature, so every estimate below is scored against truth.
+noise, with (beta, gamma) unknown. The data are a whole epidemic curve and the
+simulator is an ODE, so this is a mechanistic model -- but read the caveat
+before treating it as a likelihood-free one.
+
+CAVEAT ON THE MODEL. The mean curve is a DETERMINISTIC ODE solution and the
+observation noise is additive Gaussian, so y | theta ~ N(mean_curve(theta),
+sigma^2 I) and the likelihood is perfectly tractable. That is deliberate: it is
+what makes an exact reference posterior available by quadrature, so every
+estimate below can be scored against truth rather than against another
+estimator. But it means the model is not exercising intractability. A genuinely
+likelihood-free epidemic model is a STOCHASTIC one -- a Gillespie / Markov-jump
+SIR, or partial observation of latent compartments -- where the likelihood is
+an integral over unobserved paths. None of the methods below touch the
+likelihood, so the comparison is fair; the model is a tractable stand-in
+chosen for the reference, and a genuinely intractable simulator would cost us
+that reference.
 
 The comparison Section 10 asks for, at a matched simulation budget:
 
@@ -24,6 +36,7 @@ Run:  python examples/lfi/06_mechanistic_amortization.py
 """
 
 import time
+from pathlib import Path
 
 import torch
 
@@ -251,6 +264,115 @@ def main() -> None:
     print("  known in advance, regress on it directly; when the full density is wanted")
     print("  and is well behaved, NPE is stronger; the operator is for the case where")
     print("  many low-order functionals will be asked of one fit, cheaply.")
+
+    _plot(sim, operator, npe, y_obs, theta_true, references, npe_draws, inside)
+
+
+def _plot(sim, operator, npe, y_obs, theta_true, references, npe_draws, inside) -> None:
+    """Three panels: the data, the joint posteriors, and the R0 marginal."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("\n(matplotlib not installed; skipping the figure)")
+        return
+
+    which = 0  # the observation to draw
+    grid, exact_weights = references[which]
+    resolution = int(round(grid.shape[0] ** 0.5))
+    beta_axis = grid[:, 0].reshape(resolution, resolution)[:, 0]
+    gamma_axis = grid[:, 1].reshape(resolution, resolution)[0, :]
+
+    # The prior is uniform on a box, so the marginal density of theta is known
+    # exactly -- no kernel estimate needed to turn the ratio into a density.
+    box_area = (sim.beta_range[1] - sim.beta_range[0]) * (sim.gamma_range[1] - sim.gamma_range[0])
+
+    def uniform_marginal(points: torch.Tensor) -> torch.Tensor:
+        return torch.full((points.shape[0],), 1.0 / box_area)
+
+    single = operator.posterior(y_obs[which : which + 1])
+    ncp_density = single.density(grid, uniform_marginal)[0].reshape(resolution, resolution)
+    npe_density = npe.log_prob(
+        y_obs[which : which + 1].expand(grid.shape[0], sim.data_dim), grid
+    ).exp().reshape(resolution, resolution)
+    cell = float((beta_axis[1] - beta_axis[0]) * (gamma_axis[1] - gamma_axis[0]))
+    exact_density = (exact_weights / cell).reshape(resolution, resolution)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.4))
+
+    # --- panel 1: the observed epidemic curve ------------------------------
+    times = torch.arange(1, sim.n_obs + 1)
+    ax = axes[0]
+    ax.plot(times, y_obs[which], "o", color="#334155", ms=4, label="observed counts")
+    ax.plot(times, sim.mean_curve(theta_true[which : which + 1])[0], color="#111827", lw=2,
+            label="true mean curve")
+    ax.plot(times, sim.mean_curve(single.mean())[0], "--", color="#1d4ed8", lw=2,
+            label="curve at the NCP posterior mean")
+    ax.plot(times, sim.mean_curve(npe.mean(y_obs[which : which + 1]))[0], ":", color="#b45309", lw=2,
+            label="curve at the NPE posterior mean")
+    ax.set_xlabel("day")
+    ax.set_ylabel("infected")
+    ax.set_title(f"observation {which}: beta={float(theta_true[which, 0]):.2f}, "
+                 f"gamma={float(theta_true[which, 1]):.2f}")
+    ax.legend(fontsize=8)
+
+    # --- panel 2: the joint posterior --------------------------------------
+    ax = axes[1]
+    levels_style = [("exact (quadrature)", exact_density, "#111827", "-"),
+                    ("NCP", ncp_density, "#1d4ed8", "--"),
+                    ("NPE", npe_density, "#b45309", ":")]
+    for label, density, colour, style in levels_style:
+        peak = float(density.max())
+        if peak <= 0:
+            continue
+        ax.contour(beta_axis, gamma_axis, density.T, levels=[0.25 * peak, 0.75 * peak],
+                   colors=colour, linestyles=style, linewidths=1.8)
+        ax.plot([], [], color=colour, ls=style, lw=1.8, label=label)
+    ax.plot(float(theta_true[which, 0]), float(theta_true[which, 1]), "*", color="#dc2626",
+            ms=14, label="true theta")
+    ax.set_xlabel("beta")
+    ax.set_ylabel("gamma")
+    ax.set_title("joint posterior, contours at 25% and 75% of the peak")
+    ax.legend(fontsize=8)
+
+    # --- panel 3: the R0 marginal ------------------------------------------
+    ax = axes[2]
+    edges = torch.linspace(0.0, 12.0, 61)
+    centres = 0.5 * (edges[1:] + edges[:-1])
+    width = float(edges[1] - edges[0])
+
+    exact_r0 = r0(grid)
+    exact_hist = torch.zeros(60)
+    idx = (torch.bucketize(exact_r0.contiguous(), edges, right=True) - 1).clamp(0, 59)
+    exact_hist.index_add_(0, idx, exact_weights)
+    ax.step(centres, exact_hist / width, where="mid", color="#111827", lw=2, label="exact")
+
+    ncp_r0 = r0(single.theta)
+    ncp_hist = torch.zeros(60)
+    idx = (torch.bucketize(ncp_r0.contiguous(), edges, right=True) - 1).clamp(0, 59)
+    ncp_hist.index_add_(0, idx, single.as_probability().weights[0])
+    ax.step(centres, ncp_hist / width, where="mid", color="#1d4ed8", ls="--", lw=2, label="NCP")
+
+    kept = npe_draws[which][inside[which]]
+    npe_hist = torch.histc(r0(kept), bins=60, min=0.0, max=12.0)
+    ax.step(centres, npe_hist / (npe_hist.sum() * width), where="mid", color="#b45309", ls=":",
+            lw=2, label="NPE")
+    ax.axvline(float(r0(theta_true[which : which + 1])), color="#dc2626", lw=1.5, label="true R0")
+    ax.axvline(1.0, color="#94a3b8", lw=1, ls="-.", label="takeoff threshold")
+    ax.set_xlabel("R0 = beta / gamma")
+    ax.set_ylabel("posterior density")
+    ax.set_title("marginal posterior of R0")
+    ax.legend(fontsize=8)
+
+    fig.suptitle("SIR: the operator, NPE, and the exact posterior", y=1.02)
+    fig.tight_layout()
+    out = Path(__file__).resolve().parent.parent.parent / "figures"
+    out.mkdir(exist_ok=True)
+    path = out / "sir_posteriors.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    print(f"\nwrote {path}")
 
 
 if __name__ == "__main__":
