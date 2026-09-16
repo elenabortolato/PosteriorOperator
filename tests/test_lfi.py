@@ -428,3 +428,69 @@ def test_reference_posterior_moments():
     expected = (weights.unsqueeze(-1) * centred).T @ centred
     assert torch.allclose(cov, expected)
     assert cov.shape == (2, 2)
+
+
+# --------------------------------------------------------------------------- #
+# Bootstrap confidence intervals for the functional
+# --------------------------------------------------------------------------- #
+
+
+def test_bootstrap_interval_brackets_the_estimate(fitted):
+    _, operator, y_obs = fitted
+    posterior = operator.posterior(y_obs)
+    estimate, interval = posterior.bootstrap_functional(
+        lambda t: t, n_resamples=200, alpha=0.1, generator=torch.Generator().manual_seed(0)
+    )
+    assert estimate.shape == (len(posterior), 2)
+    assert interval.shape == (len(posterior), 2, 2)
+    assert torch.all(interval[..., 0] <= interval[..., 1])
+    # The point estimate should sit inside its own resampling interval.
+    assert torch.all(estimate >= interval[..., 0] - 1e-6)
+    assert torch.all(estimate <= interval[..., 1] + 1e-6)
+    assert torch.allclose(estimate, posterior.functional(lambda t: t), atol=1e-6)
+
+
+def test_bootstrap_interval_narrows_with_more_draws():
+    r"""The Monte Carlo part of the error shrinks like the number of draws."""
+    widths = {}
+    for n_draws in (500, 8000):
+        g = torch.Generator().manual_seed(0)
+        atoms = torch.randn(n_draws, 1, generator=g, dtype=torch.float64)
+        weights = torch.full((1, n_draws), 1.0 / n_draws, dtype=torch.float64)
+        posterior = PosteriorSample(weights=weights, atoms=atoms)
+        _, interval = posterior.bootstrap_functional(
+            lambda t: t, n_resamples=300, alpha=0.1, generator=torch.Generator().manual_seed(1)
+        )
+        widths[n_draws] = float(interval[..., 1] - interval[..., 0])
+    ratio = widths[500] / widths[8000]
+    assert ratio == pytest.approx(math.sqrt(8000 / 500), rel=0.35), f"widths {widths}"
+
+
+def test_bootstrap_interval_is_calibrated_for_the_pure_monte_carlo_part():
+    """With the weights exact, the only error IS Monte Carlo, so coverage should hold.
+
+    Uniform weights over standard-normal draws make the target the population
+    mean (zero), and the sole error is the sample average -- the case the
+    bootstrap is actually designed for.
+    """
+    alpha, covered, trials = 0.1, 0, 200
+    for r in range(trials):
+        g = torch.Generator().manual_seed(r)
+        atoms = torch.randn(400, 1, generator=g, dtype=torch.float64)
+        weights = torch.full((1, 400), 1.0 / 400, dtype=torch.float64)
+        posterior = PosteriorSample(weights=weights, atoms=atoms)
+        _, interval = posterior.bootstrap_functional(
+            lambda t: t, n_resamples=200, alpha=alpha, generator=torch.Generator().manual_seed(1000 + r)
+        )
+        covered += int(bool((interval[0, 0, 0] <= 0.0) and (0.0 <= interval[0, 0, 1])))
+    assert covered / trials == pytest.approx(1 - alpha, abs=0.06), f"coverage {covered / trials}"
+
+
+def test_bootstrap_validates_its_arguments(fitted):
+    _, operator, y_obs = fitted
+    posterior = operator.posterior(y_obs)
+    with pytest.raises(ValueError, match="n_resamples"):
+        posterior.bootstrap_functional(lambda t: t, n_resamples=1)
+    for bad in (0.0, 1.0, -0.2):
+        with pytest.raises(ValueError, match=r"\(0, 1\)"):
+            posterior.bootstrap_functional(lambda t: t, alpha=bad)

@@ -237,7 +237,14 @@ inflates the reported standard deviation by 3.6× instead of 1.6×.
 | --- | --- |
 | `GaussianLinear` | closed-form posterior, canonical correlations, **and** the exact $L^2$ spectrum |
 | `MA2` | exact banded-Gaussian likelihood → reference posterior by quadrature |
+| `AR2` | exact stationary Gaussian likelihood (full Toeplitz), Yule-Walker autocovariances |
+| `GAndK` | intractable density, recovered numerically by inverting the quantile function |
+| `SIR` | mechanistic ODE epidemic; exact likelihood → reference posterior by quadrature |
 | `SumIdentified` | closed-form posterior; only $\theta_1+\theta_2$ identified; exact $\sigma_1$ |
+
+`posterior_operator.baselines` supplies the two comparators: `DirectRegression`
+(one fit per functional) and `NeuralPosteriorEstimator` (a conditional mixture
+density network, i.e. NPE in its original form).
 
 ## LFI examples
 
@@ -247,6 +254,11 @@ inflates the reported standard deviation by 3.6× instead of 1.6×.
 | `lfi/02_amortized_functionals.py` | 11 functionals from one fit, each scored against quadrature |
 | `lfi/03_prior_retargeting.py` | change the prior after training; ESS; comparison against a refit |
 | `lfi/04_identifiability.py` | $\sigma_1$ and $v_1$ as identifiability diagnostics; the compactness warning; rank vs concentration |
+| `lfi/05_spectrum_decay.py` | does $\sigma_k$ decay as assumed? MA(2), AR(2), g-and-k, calibrated against the exact Gaussian spectrum |
+| `lfi/06_mechanistic_amortization.py` | SIR epidemic: NCP vs NPE vs one-regression-per-functional, on accuracy *and* cost |
+| `lfi/07_functional_confidence_intervals.py` | frequentist coverage for $\widehat{T}_f(y_0)$; root-$n$ or not; the bootstrap's actual coverage |
+
+These four cover the first four items of the paper's experimental protocol.
 
 ## What the experiments say
 
@@ -274,6 +286,50 @@ reported spread degrades from 1.18× to 1.63× the truth. Raising the rank from
 64 to 256 barely moves it (4.09 → 4.01 clipped), so at these budgets the limit
 is optimisation, not the spectrum. Posterior *location* stays accurate
 throughout.
+
+### Against the baselines, on a mechanistic simulator
+
+`lfi/06_mechanistic_amortization.py`, SIR epidemic, 30k simulations, mean
+absolute error against the exact posterior over 40 held-out observations:
+
+| functional | NCP | NPE | direct regr. | prior-only |
+| --- | --- | --- | --- | --- |
+| mean (β, γ) | 0.0426 | **0.0158** | 0.0225 | 0.4300 |
+| mean R₀ = β/γ | 0.1236 | **0.0583** | 0.0742 | 2.6511 |
+| P(R₀ > 1) | 0.0519 | **0.0094** | 0.0122 | 0.1338 |
+| 0.9 quantile of R₀ | 2.5745 | **0.0948** | n/a | 5.5681 |
+
+**NPE is more accurate than the operator on every functional**, and direct
+regression is close behind on the ones it can target. That is the expected
+ordering — this posterior is smooth, unimodal and two-dimensional, which suits
+a mixture density network, and a regression optimises for its one target. The
+operator's weak row is the tail quantile, where the over-dispersion bites: it
+beats prior-only by only 2×, against NPE's 60×.
+
+Where the operator wins is the *shape* of the cost: a new functional is a
+weighted average over stored draws at **0.08 ms**, against 72 ms for NPE
+(which must resample) and a full refit for a regression. So the claim to make
+for it is a cost claim, not an accuracy claim.
+
+### Does σ_k decay as assumed?
+
+`lfi/05_spectrum_decay.py` fits both decay laws on MA(2), AR(2) and g-and-k,
+calibrated against the exact Gaussian spectrum. **Geometric decay fits better
+than polynomial on every benchmark** (R² ≈ 0.98–0.99 against 0.83–0.90),
+including on the exact spectrum where there is no estimation error.
+
+That is *good* news for the rank-selection bound: geometric decay makes
+$\sum_{k>d}\sigma_k^2$ fall geometrically in $d$, so the truncation-bias term
+is far smaller than a Sobolev-type polynomial assumption allows, and the oracle
+rank grows logarithmically rather than polynomially in the target accuracy.
+Worth stating the bound under geometric decay as the primary case.
+
+The models differ enormously in difficulty, though: AR(2) needs $d = 8$ to
+capture 99% of $\sum_k \sigma_k^2$, while g-and-k still leaves 23% outside
+$d = 16$. Rank selection is model-specific. (The estimated spectrum tracks the
+truth at the top and undershoots in the tail at large $n$, so the fitted rates
+and tails are mildly optimistic — the script measures that bias rather than
+assuming it.)
 
 Two claims did **not** survive testing, both worth knowing before relying on
 them:

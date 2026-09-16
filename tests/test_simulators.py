@@ -10,7 +10,7 @@ import math
 import pytest
 import torch
 
-from posterior_operator.simulators import MA2, GaussianLinear, SumIdentified
+from posterior_operator.simulators import MA2, SIR, AR2, GAndK, GaussianLinear, SumIdentified
 
 DT = torch.float64
 
@@ -349,3 +349,230 @@ def test_sum_identified_noise_is_validated():
     assert torch.allclose(
         sim.log_likelihood(theta, y[0]), sim.log_likelihood(theta.flip(-1), y[0]), atol=1e-10
     )
+
+
+# --------------------------------------------------------------------------- #
+# AR2
+# --------------------------------------------------------------------------- #
+
+
+def test_ar2_prior_lives_on_the_stationarity_triangle():
+    sim = AR2(n_timesteps=20, dtype=DT)
+    theta = sim.sample_prior(4000, generator=torch.Generator().manual_seed(0))
+    assert bool(AR2.in_support(theta).all())
+    # Vertices (-2, -1), (2, -1), (0, 1): area 4 inside a bounding box of area 8.
+    box = torch.stack([4 * torch.rand(40_000, dtype=DT) - 2, 2 * torch.rand(40_000, dtype=DT) - 1], dim=-1)
+    assert float(AR2.in_support(box).to(DT).mean()) == pytest.approx(0.5, abs=0.02)
+
+
+def test_ar2_autocovariance_matches_the_simulator():
+    """Yule-Walker against the empirical autocovariance of long simulated paths."""
+    sim = AR2(n_timesteps=3000, summaries=False, dtype=DT)
+    theta = torch.tensor([[0.5, 0.3]], dtype=DT)
+    series = sim.simulate(theta.expand(200, 2).contiguous(), generator=torch.Generator().manual_seed(0))
+    centred = series - series.mean(dim=-1, keepdim=True)
+    theoretical = sim.autocovariance(theta, 3)[0]
+    for lag in range(4):
+        empirical = float((centred[:, lag:] * centred[:, : centred.shape[1] - lag]).mean())
+        assert empirical == pytest.approx(float(theoretical[lag]), rel=0.05)
+
+
+def test_ar2_autocovariance_satisfies_its_own_recursion():
+    sim = AR2(dtype=DT)
+    theta = torch.tensor([[0.4, -0.3], [-0.6, 0.2]], dtype=DT)
+    gamma = sim.autocovariance(theta, 6)
+    for k in range(2, 7):
+        expected = theta[:, 0] * gamma[:, k - 1] + theta[:, 1] * gamma[:, k - 2]
+        assert torch.allclose(gamma[:, k], expected, atol=1e-12)
+    assert torch.all(gamma[:, 0] > 0)  # a variance
+
+
+def test_ar2_starts_from_the_stationary_law():
+    """No burn-in bias: the marginal variance should match gamma_0 at every t."""
+    sim = AR2(n_timesteps=12, summaries=False, dtype=DT)
+    theta = torch.tensor([[0.6, 0.2]], dtype=DT)
+    series = sim.simulate(theta.expand(60_000, 2).contiguous(), generator=torch.Generator().manual_seed(1))
+    gamma0 = float(sim.autocovariance(theta, 0)[0, 0])
+    variances = series.var(dim=0, unbiased=True)
+    assert torch.allclose(variances, torch.full_like(variances, gamma0), rtol=0.06)
+
+
+def test_ar2_likelihood_matches_a_direct_gaussian_evaluation():
+    sim = AR2(n_timesteps=10, summaries=False, dtype=DT)
+    theta = torch.tensor([[0.5, 0.2], [-0.4, 0.3]], dtype=DT)
+    y = torch.randn(10, generator=torch.Generator().manual_seed(0), dtype=DT)
+    got = sim.log_likelihood(theta, y, chunk_size=1)
+    idx = (torch.arange(10).unsqueeze(0) - torch.arange(10).unsqueeze(1)).abs()
+    for i in range(2):
+        gamma = sim.autocovariance(theta[i : i + 1], 9)[0]
+        cov = gamma[idx.reshape(-1)].reshape(10, 10)
+        dist = torch.distributions.MultivariateNormal(torch.zeros(10, dtype=DT), covariance_matrix=cov)
+        assert float(got[i]) == pytest.approx(float(dist.log_prob(y)), rel=1e-10)
+    assert torch.all(torch.isinf(sim.log_likelihood(torch.tensor([[1.5, 0.9]], dtype=DT), y)))
+    with pytest.raises(NotImplementedError, match="raw series"):
+        AR2(summaries=True, dtype=DT).log_likelihood(theta, y)
+
+
+# --------------------------------------------------------------------------- #
+# GAndK
+# --------------------------------------------------------------------------- #
+
+
+def test_gandk_quantile_inversion_round_trips():
+    sim = GAndK(n_obs=20, dtype=DT)
+    theta = torch.tensor([[3.0, 1.0, 2.0, 0.5], [0.0, 2.0, 0.0, 0.1]], dtype=DT)
+    z = torch.linspace(-4, 4, 17, dtype=DT).expand(2, 17)
+    recovered = sim.inverse_quantile(theta, sim.quantile(theta, z))
+    assert torch.allclose(recovered, z, atol=1e-5)
+
+
+def test_gandk_quantile_is_increasing_in_z():
+    sim = GAndK(dtype=DT)
+    theta = sim.sample_prior(50, generator=torch.Generator().manual_seed(0))
+    z = torch.linspace(-4, 4, 60, dtype=DT).expand(50, 60)
+    values = sim.quantile(theta, z)
+    assert torch.all(values[:, 1:] > values[:, :-1])
+    assert torch.all(sim.quantile_derivative(theta, z) > 0)
+
+
+def test_gandk_density_integrates_to_one():
+    r"""p(y) = phi(z) / Q'(z) at z = Q^{-1}(y); the basis of the log-likelihood."""
+    sim = GAndK(dtype=DT)
+    theta = torch.tensor([[3.0, 1.0, 1.5, 0.4]], dtype=DT)
+    lo = float(sim.quantile(theta, torch.tensor([[-9.0]], dtype=DT)))
+    hi = float(sim.quantile(theta, torch.tensor([[9.0]], dtype=DT)))
+    grid = torch.linspace(lo, hi, 40001, dtype=DT)
+    z = sim.inverse_quantile(theta, grid.reshape(1, -1))
+    density = torch.exp(-0.5 * z**2 - 0.5 * math.log(2 * math.pi)) / sim.quantile_derivative(theta, z)
+    assert float(torch.trapz(density[0], grid)) == pytest.approx(1.0, abs=1e-3)
+
+
+def test_gandk_log_likelihood_is_the_sum_of_log_densities():
+    sim = GAndK(n_obs=8, summaries=False, dtype=DT)
+    theta = torch.tensor([[3.0, 1.0, 1.5, 0.4]], dtype=DT)
+    _, y = sim.sample_joint(1, generator=torch.Generator().manual_seed(2))
+    z = sim.inverse_quantile(theta, y[0].reshape(1, -1))
+    manual = float(
+        (-0.5 * z**2 - 0.5 * math.log(2 * math.pi) - torch.log(sim.quantile_derivative(theta, z))).sum()
+    )
+    assert float(sim.log_likelihood(theta, y[0])[0]) == pytest.approx(manual, rel=1e-9)
+
+
+def test_gandk_summaries_respond_to_the_right_parameters():
+    """Each summary should move with the parameter it is meant to track."""
+    sim = GAndK(n_obs=4000, dtype=DT)
+    base = torch.tensor([[3.0, 1.0, 0.0, 0.1]], dtype=DT)
+    g = torch.Generator().manual_seed(3)
+    reference = sim.simulate(base.expand(200, 4).contiguous(), generator=g).mean(0)
+    for index, name in enumerate(("location", "scale", "skewness", "tail")):
+        shifted = base.clone()
+        shifted[0, index] += 1.5
+        moved = sim.simulate(shifted.expand(200, 4).contiguous(), generator=g).mean(0)
+        gap = (moved - reference).abs()
+        assert int(gap.argmax()) == index, f"changing {name} should move summary {index}, moved {int(gap.argmax())}"
+
+
+def test_gandk_log_likelihood_rejects_invalid_parameters():
+    sim = GAndK(n_obs=5, summaries=False, dtype=DT)
+    _, y = sim.sample_joint(1, generator=torch.Generator().manual_seed(4))
+    bad = torch.tensor([[3.0, 0.0, 0.0, 0.0], [3.0, 1.0, 0.0, -2.0]], dtype=DT)
+    assert torch.all(torch.isinf(sim.log_likelihood(bad, y[0])))
+
+
+# --------------------------------------------------------------------------- #
+# SIR
+# --------------------------------------------------------------------------- #
+
+
+def test_sir_curve_conserves_the_population():
+    """RK4 on the SIR system must keep S + I + R fixed."""
+    sim = SIR(dtype=DT)
+    theta = sim.sample_prior(32, generator=torch.Generator().manual_seed(0))
+    curve = sim.mean_curve(theta)
+    assert curve.shape == (32, sim.n_obs)
+    assert torch.all(curve >= 0)
+    assert torch.all(curve <= sim.population + 1e-6)
+
+
+def test_sir_epidemic_takes_off_only_when_r0_exceeds_one():
+    sim = SIR(dtype=DT)
+    subcritical = sim.mean_curve(torch.tensor([[0.5, 1.0]], dtype=DT))[0]  # R0 = 0.5
+    supercritical = sim.mean_curve(torch.tensor([[2.0, 0.4]], dtype=DT))[0]  # R0 = 5
+    assert float(subcritical.max()) <= sim.initial_infected + 1e-6
+    assert float(supercritical.max()) > 50 * sim.initial_infected
+
+
+def test_sir_solver_is_converged_at_the_default_step():
+    """Halving the step must not move the curve materially."""
+    coarse = SIR(steps_per_unit=4, dtype=DT)
+    fine = SIR(steps_per_unit=16, dtype=DT)
+    theta = torch.tensor([[2.5, 0.3], [0.8, 0.5]], dtype=DT)
+    gap = (coarse.mean_curve(theta) - fine.mean_curve(theta)).abs().max()
+    assert float(gap) < 0.01 * coarse.population
+
+
+def test_sir_likelihood_is_gaussian_about_the_mean_curve():
+    sim = SIR(dtype=DT)
+    theta = sim.sample_prior(5, generator=torch.Generator().manual_seed(1))
+    _, y = sim.sample_joint(1, generator=torch.Generator().manual_seed(2))
+    residual = y[0].unsqueeze(0) - sim.mean_curve(theta)
+    expected = -0.5 * (residual**2).sum(-1) / sim.noise**2 - sim.n_obs * math.log(
+        sim.noise * math.sqrt(2 * math.pi)
+    )
+    assert torch.allclose(sim.log_likelihood(theta, y[0]), expected, rtol=1e-10)
+
+
+def test_sir_grid_posterior_concentrates_near_the_truth():
+    sim = SIR(dtype=DT)
+    theta, y = sim.sample_joint(6, generator=torch.Generator().manual_seed(3))
+    hits = 0
+    for i in range(6):
+        grid, weights = sim.grid_posterior(y[i], resolution=90)
+        assert float(weights.sum()) == pytest.approx(1.0, abs=1e-6)
+        assert torch.all(weights >= 0)
+        mean = (weights.unsqueeze(-1) * grid).sum(0)
+        sd = ((weights.unsqueeze(-1) * (grid - mean) ** 2).sum(0)).sqrt()
+        # Within three posterior standard deviations of the generating parameter.
+        hits += int(bool(((mean - theta[i]).abs() <= 3 * sd + 1e-6).all()))
+    assert hits >= 5, f"only {hits}/6 reference posteriors covered the truth"
+
+
+def test_sir_in_support_matches_the_prior_box():
+    sim = SIR(dtype=DT)
+    theta = sim.sample_prior(500, generator=torch.Generator().manual_seed(4))
+    assert bool(sim.in_support(theta).all())
+    outside = torch.tensor([[0.0, 0.5], [1.0, 5.0], [10.0, 0.5]], dtype=DT)
+    assert not bool(sim.in_support(outside).any())
+
+
+def test_sir_posterior_is_tighter_at_lower_noise():
+    """The noise level is what places the model in or out of the compact regime."""
+    spreads = {}
+    for noise in (40.0, 120.0):
+        sim = SIR(noise=noise, dtype=DT)
+        theta, y = sim.sample_joint(4, generator=torch.Generator().manual_seed(5))
+        widths = []
+        for i in range(4):
+            grid, weights = sim.grid_posterior(y[i], resolution=90)
+            mean = (weights.unsqueeze(-1) * grid).sum(0)
+            widths.append(((weights.unsqueeze(-1) * (grid - mean) ** 2).sum(0)).sqrt())
+        spreads[noise] = float(torch.stack(widths).mean())
+    assert spreads[40.0] < spreads[120.0]
+
+
+@pytest.mark.parametrize("n_obs, steps_per_unit", [(30, 4), (100, 4), (7, 3), (13, 5)])
+def test_sir_records_every_observation_time(n_obs, steps_per_unit):
+    """Observation times must land on distinct integration steps.
+
+    The step count is rounded up to a multiple of ``n_obs`` for exactly this
+    reason: with a plain round-to-nearest, two observation times can map to the
+    same step and one is then never written, leaving a stale zero in the curve.
+    Checked end to end against a much finer solver, which also confirms each
+    slot holds the value for the right time rather than merely a non-zero one.
+    """
+    coarse = SIR(n_obs=n_obs, steps_per_unit=steps_per_unit, dtype=DT)
+    fine = SIR(n_obs=n_obs, steps_per_unit=steps_per_unit * 12, dtype=DT)
+    theta = torch.tensor([[2.0, 0.4], [1.0, 0.3]], dtype=DT)
+    curve = coarse.mean_curve(theta)
+    assert curve.shape == (2, n_obs)
+    assert torch.allclose(curve, fine.mean_curve(theta), atol=0.01 * coarse.population)

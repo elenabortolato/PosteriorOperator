@@ -37,6 +37,7 @@ Quick start
     posterior.interval(alpha=0.1)  # shortest 90% conditional interval
 """
 
+from .baselines import DirectRegression, NeuralPosteriorEstimator
 from .data import (
     BimodalMixture,
     Heteroscedastic,
@@ -57,22 +58,27 @@ from .losses import (
 )
 from .nn import MLP, SingularValues
 from .operator import NCPOperator
-from .simulators import MA2, GaussianLinear, Simulator, SumIdentified
+from .simulators import MA2, SIR, AR2, GAndK, GaussianLinear, Simulator, SumIdentified
 from .training import train_ncp
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "AR2",
     "MA2",
     "MLP",
+    "SIR",
     "BimodalMixture",
     "ConditionalDistribution",
+    "DirectRegression",
+    "GAndK",
     "GaussianKDE",
     "GaussianLinear",
     "Heteroscedastic",
     "LinearGaussian",
     "NCPLoss",
     "NCPOperator",
+    "NeuralPosteriorEstimator",
     "PosteriorOperator",
     "PosteriorSample",
     "SingularValues",

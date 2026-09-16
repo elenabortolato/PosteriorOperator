@@ -27,7 +27,9 @@ from typing import Optional, Tuple
 import torch
 from torch import Tensor
 
-__all__ = ["Simulator", "GaussianLinear", "MA2", "SumIdentified"]
+__all__ = ["Simulator", "GaussianLinear", "MA2", "AR2", "GAndK", "SIR", "SumIdentified"]
+
+_LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
 
 
 class Simulator:
@@ -432,3 +434,357 @@ def _inv_sqrt(matrix: Tensor) -> Tensor:
     """Symmetric inverse square root of a positive-definite matrix."""
     evals, evecs = torch.linalg.eigh(matrix)
     return (evecs * evals.clamp_min(torch.finfo(matrix.dtype).eps).rsqrt()) @ evecs.T
+
+
+class AR2(Simulator):
+    r"""AR(2): ``y_t = phi_1 y_{t-1} + phi_2 y_{t-2} + e_t``, ``e_t ~ N(0, 1)``.
+
+    The autoregressive companion to :class:`MA2`. The prior is uniform on the
+    stationarity triangle :math:`\{\phi_1 + \phi_2 < 1,\ \phi_2 - \phi_1 < 1,\
+    |\phi_2| < 1\}`. Unlike MA(2) the stationary covariance is full Toeplitz
+    rather than banded -- the autocovariances decay geometrically instead of
+    vanishing after lag 2 -- which makes it a useful contrast when asking how
+    fast the operator spectrum decays.
+    """
+
+    theta_dim = 2
+
+    def __init__(self, n_timesteps: int = 50, summaries: bool = True, n_lags: int = 4, **kw):
+        super().__init__(**kw)
+        self.n_timesteps = int(n_timesteps)
+        self.summaries = bool(summaries)
+        self.n_lags = int(n_lags)
+        self.data_dim = self.n_lags + 1 if summaries else self.n_timesteps
+
+    @staticmethod
+    def in_support(theta: Tensor) -> Tensor:
+        p1, p2 = theta[:, 0], theta[:, 1]
+        return (p1 + p2 < 1.0) & (p2 - p1 < 1.0) & (p2.abs() < 1.0)
+
+    def sample_prior(self, n: int, generator: Optional[torch.Generator] = None) -> Tensor:
+        kept, total = [], 0
+        while total < n:
+            batch = torch.rand(max(n, 256), 2, generator=generator, dtype=self.dtype)
+            cand = torch.stack([4.0 * batch[:, 0] - 2.0, 2.0 * batch[:, 1] - 1.0], dim=-1)
+            ok = cand[self.in_support(cand)]
+            kept.append(ok)
+            total += ok.shape[0]
+        return torch.cat(kept)[:n]
+
+    def autocovariance(self, theta: Tensor, n_lags: int) -> Tensor:
+        r"""Stationary autocovariances :math:`\gamma_0, \dots, \gamma_{n\_lags}`.
+
+        From the Yule-Walker solution
+        :math:`\gamma_0 = (1 - \phi_2) / [(1 + \phi_2)((1 - \phi_2)^2 - \phi_1^2)]`
+        and :math:`\gamma_1 = \phi_1 \gamma_0 / (1 - \phi_2)`, then the
+        recursion :math:`\gamma_k = \phi_1 \gamma_{k-1} + \phi_2 \gamma_{k-2}`.
+        """
+        p1, p2 = theta[:, 0], theta[:, 1]
+        gamma0 = (1 - p2) / ((1 + p2) * ((1 - p2) ** 2 - p1**2))
+        gamma1 = p1 * gamma0 / (1 - p2)
+        out = [gamma0, gamma1]
+        for _ in range(2, n_lags + 1):
+            out.append(p1 * out[-1] + p2 * out[-2])
+        return torch.stack(out, dim=-1)
+
+    def simulate(self, theta: Tensor, generator: Optional[torch.Generator] = None) -> Tensor:
+        n, t = theta.shape[0], self.n_timesteps
+        # Start from the exact stationary law of (y_1, y_2) so there is no burn-in bias.
+        gamma = self.autocovariance(theta, 1)
+        g0, g1 = gamma[:, 0], gamma[:, 1]
+        z = torch.randn(n, 2, generator=generator, dtype=self.dtype)
+        y_prev2 = g0.sqrt() * z[:, 0]
+        cond_sd = (g0 - g1**2 / g0).clamp_min(1e-12).sqrt()
+        y_prev1 = (g1 / g0) * y_prev2 + cond_sd * z[:, 1]
+
+        noise = torch.randn(n, t, generator=generator, dtype=self.dtype)
+        series = [y_prev2, y_prev1]
+        for step in range(2, t):
+            series.append(theta[:, 0] * series[-1] + theta[:, 1] * series[-2] + noise[:, step])
+        out = torch.stack(series[:t], dim=-1)
+        return self.summarize(out) if self.summaries else out
+
+    def summarize(self, series: Tensor) -> Tensor:
+        """Sample variance plus autocovariances at lags 1..``n_lags``."""
+        centred = series - series.mean(dim=-1, keepdim=True)
+        t = centred.shape[-1]
+        feats = [(centred**2).mean(dim=-1, keepdim=True)]
+        for lag in range(1, self.n_lags + 1):
+            feats.append((centred[:, lag:] * centred[:, : t - lag]).mean(dim=-1, keepdim=True))
+        return torch.cat(feats, dim=-1)
+
+    def log_prior(self, theta: Tensor) -> Tensor:
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, 2)
+        return torch.where(
+            self.in_support(theta), torch.zeros(theta.shape[0]), torch.full((theta.shape[0],), -math.inf)
+        )
+
+    def log_likelihood(self, theta: Tensor, y_obs: Tensor, chunk_size: int = 1024) -> Tensor:
+        """Exact stationary Gaussian log-likelihood of a raw series."""
+        if self.summaries:
+            raise NotImplementedError("the exact likelihood is for the raw series; use summaries=False")
+        theta = torch.as_tensor(theta, dtype=torch.float64).reshape(-1, 2)
+        y = torch.as_tensor(y_obs, dtype=torch.float64).reshape(self.n_timesteps)
+        t = self.n_timesteps
+        idx = (torch.arange(t).unsqueeze(0) - torch.arange(t).unsqueeze(1)).abs()
+        out = torch.full((theta.shape[0],), -float("inf"), dtype=torch.float64)
+        ok = self.in_support(theta)
+        for start in range(0, theta.shape[0], chunk_size):
+            stop = min(start + chunk_size, theta.shape[0])
+            sel = ok[start:stop].nonzero().flatten() + start
+            if sel.numel() == 0:
+                continue
+            gamma = self.autocovariance(theta[sel].to(torch.float64), t - 1)
+            cov = gamma[:, idx.reshape(-1)].reshape(sel.numel(), t, t)
+            chol = torch.linalg.cholesky(cov)
+            solved = torch.cholesky_solve(y.expand(sel.numel(), t).unsqueeze(-1), chol)
+            quad = (y.unsqueeze(0) * solved.squeeze(-1)).sum(-1)
+            log_det = 2.0 * torch.log(torch.diagonal(chol, dim1=1, dim2=2)).sum(-1)
+            out[sel] = -0.5 * (quad + log_det + t * math.log(2 * math.pi))
+        return out
+
+
+class GAndK(Simulator):
+    r"""The g-and-k distribution, defined by its quantile function.
+
+    .. math::
+        Q(z; A, B, g, k) = A + B\big(1 + c\,\tanh(gz/2)\big)\, z\,(1 + z^2)^k,
+        \qquad z \sim N(0, 1),\ c = 0.8.
+
+    A standard likelihood-free benchmark: sampling is trivial (push a normal
+    draw through :math:`Q`) while the density has no closed form, since it
+    requires inverting :math:`Q`. ``A`` and ``B`` set location and scale,
+    ``g`` skewness and ``k`` tail weight. The prior is uniform on
+    :math:`[0, 10]^4`.
+
+    The density *can* be recovered numerically, because :math:`Q` is monotone:
+    :math:`p(y) = \varphi(z) / Q'(z)` at :math:`z = Q^{-1}(y)`. That is what
+    :meth:`log_likelihood` does, by bisection -- available for validation, not
+    something a simulation-based method would use.
+    """
+
+    theta_dim = 4
+    C = 0.8
+
+    def __init__(self, n_obs: int = 100, summaries: bool = True, prior_high: float = 10.0, **kw):
+        super().__init__(**kw)
+        self.n_obs = int(n_obs)
+        self.summaries = bool(summaries)
+        self.prior_high = float(prior_high)
+        self.data_dim = 4 if summaries else self.n_obs
+
+    def sample_prior(self, n: int, generator: Optional[torch.Generator] = None) -> Tensor:
+        return self.prior_high * torch.rand(n, 4, generator=generator, dtype=self.dtype)
+
+    def log_prior(self, theta: Tensor) -> Tensor:
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, 4)
+        inside = ((theta >= 0) & (theta <= self.prior_high)).all(dim=-1)
+        return torch.where(inside, torch.zeros(theta.shape[0]), torch.full((theta.shape[0],), -math.inf))
+
+    def quantile(self, theta: Tensor, z: Tensor) -> Tensor:
+        r""":math:`Q(z)` broadcast over a batch of parameters, shape ``(n, m)``."""
+        a, b, g, k = (theta[:, i : i + 1] for i in range(4))
+        return a + b * (1 + self.C * torch.tanh(g * z / 2)) * z * (1 + z**2) ** k
+
+    def quantile_derivative(self, theta: Tensor, z: Tensor) -> Tensor:
+        r""":math:`Q'(z)`, needed to turn :math:`\varphi(z)` into a density in ``y``."""
+        a, b, g, k = (theta[:, i : i + 1] for i in range(4))
+        tanh = torch.tanh(g * z / 2)
+        tilt = 1 + self.C * tanh
+        tilt_derivative = self.C * (g / 2) * (1 - tanh**2)
+        base = z * (1 + z**2) ** k
+        base_derivative = (1 + z**2) ** (k - 1) * (1 + (2 * k + 1) * z**2)
+        return b * (tilt_derivative * base + tilt * base_derivative)
+
+    def simulate(self, theta: Tensor, generator: Optional[torch.Generator] = None) -> Tensor:
+        z = torch.randn(theta.shape[0], self.n_obs, generator=generator, dtype=self.dtype)
+        y = self.quantile(theta, z)
+        return self.summarize(y) if self.summaries else y
+
+    def summarize(self, y: Tensor) -> Tensor:
+        r"""The four robust order-statistic summaries standard for this model.
+
+        Location, scale, skewness and kurtosis read off the octiles
+        :math:`E_1, \dots, E_7`: :math:`E_4`, :math:`E_6 - E_2`,
+        :math:`(E_6 + E_2 - 2E_4)/(E_6 - E_2)` and
+        :math:`(E_7 - E_5 + E_3 - E_1)/(E_6 - E_2)`.
+        """
+        octiles = torch.quantile(
+            y, torch.arange(1, 8, dtype=y.dtype) / 8.0, dim=-1, interpolation="linear"
+        ).T  # (n, 7)
+        e1, e2, e3, e4, e5, e6, e7 = (octiles[:, i] for i in range(7))
+        scale = (e6 - e2).clamp_min(1e-8)
+        return torch.stack([e4, scale, (e6 + e2 - 2 * e4) / scale, (e7 - e5 + e3 - e1) / scale], dim=-1)
+
+    def inverse_quantile(self, theta: Tensor, y: Tensor, iterations: int = 80) -> Tensor:
+        r""":math:`Q^{-1}(y)` by bisection. ``Q`` is increasing, so this is safe."""
+        low = torch.full_like(y, -40.0)
+        high = torch.full_like(y, 40.0)
+        for _ in range(iterations):
+            mid = 0.5 * (low + high)
+            too_big = self.quantile(theta, mid) > y
+            high = torch.where(too_big, mid, high)
+            low = torch.where(too_big, low, mid)
+        return 0.5 * (low + high)
+
+    def log_likelihood(self, theta: Tensor, y_obs: Tensor, chunk_size: int = 4096) -> Tensor:
+        """Numerically inverted log-likelihood of one observed sample."""
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, 4)
+        y = torch.as_tensor(y_obs, dtype=self.dtype).reshape(1, -1)
+        out = torch.full((theta.shape[0],), -float("inf"), dtype=self.dtype)
+        valid = (theta[:, 1] > 1e-6) & (theta[:, 3] > -0.5)
+        for start in range(0, theta.shape[0], chunk_size):
+            stop = min(start + chunk_size, theta.shape[0])
+            sel = valid[start:stop].nonzero().flatten() + start
+            if sel.numel() == 0:
+                continue
+            block = theta[sel]
+            z = self.inverse_quantile(block, y.expand(sel.numel(), y.shape[1]))
+            derivative = self.quantile_derivative(block, z).clamp_min(1e-30)
+            log_density = -0.5 * z**2 - _LOG_SQRT_2PI - torch.log(derivative)
+            out[sel] = log_density.sum(dim=-1)
+        return out
+
+
+class SIR(Simulator):
+    r"""A mechanistic SIR epidemic: infected counts observed with Gaussian noise.
+
+    .. math::
+        S' = -\beta S I / N, \qquad I' = \beta S I / N - \gamma I, \qquad R' = \gamma I,
+
+    integrated by fixed-step RK4 from :math:`(S, I, R) = (N - I_0, I_0, 0)`, with
+    :math:`I(t_j)` observed at ``n_obs`` equally spaced times under additive
+    noise. The parameter :math:`(\beta, \gamma)` is low-dimensional but the data
+    are a whole epidemic curve, which is the regime where amortising over both
+    observations and functionals pays.
+
+    Nothing about the simulator is analytic, but because the mean curve is a
+    deterministic ODE solution and the noise is Gaussian, the likelihood *is*
+    computable -- so a reference posterior is available by quadrature via
+    :meth:`grid_posterior`, and posterior functionals can be scored against it.
+
+    The default ``noise`` is chosen so the posterior is about five times tighter
+    than the prior, which is a realistic reporting-noise regime. Lowering it
+    makes the curve nearly pin the parameter down (at ``noise=12`` the posterior
+    is over a hundred times tighter than the prior and
+    :math:`\hat\sigma_1 > 0.999`), which is the near-deterministic regime where
+    the density ratio leaves :math:`L^2` and the low-rank model should not be
+    trusted.
+    """
+
+    theta_dim = 2
+
+    def __init__(
+        self,
+        population: float = 1000.0,
+        initial_infected: float = 5.0,
+        duration: float = 30.0,
+        n_obs: int = 30,
+        noise: float = 40.0,
+        steps_per_unit: int = 4,
+        beta_range: Tuple[float, float] = (0.4, 3.0),
+        gamma_range: Tuple[float, float] = (0.1, 1.0),
+        **kw,
+    ):
+        super().__init__(**kw)
+        self.population = float(population)
+        self.initial_infected = float(initial_infected)
+        self.duration = float(duration)
+        self.n_obs = int(n_obs)
+        self.noise = float(noise)
+        self.steps_per_unit = int(steps_per_unit)
+        self.beta_range = beta_range
+        self.gamma_range = gamma_range
+        self.data_dim = self.n_obs
+
+    def sample_prior(self, n: int, generator: Optional[torch.Generator] = None) -> Tensor:
+        unit = torch.rand(n, 2, generator=generator, dtype=self.dtype)
+        lo = torch.tensor([self.beta_range[0], self.gamma_range[0]], dtype=self.dtype)
+        hi = torch.tensor([self.beta_range[1], self.gamma_range[1]], dtype=self.dtype)
+        return lo + (hi - lo) * unit
+
+    def log_prior(self, theta: Tensor) -> Tensor:
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, 2)
+        lo = torch.tensor([self.beta_range[0], self.gamma_range[0]], dtype=theta.dtype)
+        hi = torch.tensor([self.beta_range[1], self.gamma_range[1]], dtype=theta.dtype)
+        inside = ((theta >= lo) & (theta <= hi)).all(dim=-1)
+        return torch.where(inside, torch.zeros(theta.shape[0]), torch.full((theta.shape[0],), -math.inf))
+
+    def mean_curve(self, theta: Tensor) -> Tensor:
+        """Noise-free infected counts at the observation times, shape ``(n, n_obs)``."""
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, 2)
+        beta, gamma = theta[:, 0], theta[:, 1]
+        n_pop = self.population
+        # Round the step count up to a multiple of n_obs so every observation
+        # time lands exactly on an integration step. Without this, two
+        # observation times can round to the same step and one of them is
+        # silently never recorded, leaving a zero in the curve.
+        base = max(1, int(round(self.duration * self.steps_per_unit)))
+        total_steps = -(-base // self.n_obs) * self.n_obs
+        dt = self.duration / total_steps
+        stride = total_steps // self.n_obs
+        record_at = {j * stride: j for j in range(1, self.n_obs + 1)}
+
+        state = torch.stack(
+            [
+                torch.full_like(beta, n_pop - self.initial_infected),
+                torch.full_like(beta, self.initial_infected),
+                torch.zeros_like(beta),
+            ],
+            dim=-1,
+        )
+        observed = torch.zeros(theta.shape[0], self.n_obs, dtype=self.dtype)
+
+        def derivative(z: Tensor) -> Tensor:
+            s, i = z[:, 0], z[:, 1]
+            infection = beta * s * i / n_pop
+            removal = gamma * i
+            return torch.stack([-infection, infection - removal, removal], dim=-1)
+
+        for step in range(1, total_steps + 1):
+            k1 = derivative(state)
+            k2 = derivative(state + 0.5 * dt * k1)
+            k3 = derivative(state + 0.5 * dt * k2)
+            k4 = derivative(state + dt * k3)
+            state = (state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)).clamp_min(0.0)
+            if step in record_at:
+                observed[:, record_at[step] - 1] = state[:, 1]
+        return observed
+
+    def simulate(self, theta: Tensor, generator: Optional[torch.Generator] = None) -> Tensor:
+        mean = self.mean_curve(theta)
+        noise = torch.randn(mean.shape, generator=generator, dtype=self.dtype)
+        return mean + self.noise * noise
+
+    def log_likelihood(self, theta: Tensor, y_obs: Tensor, chunk_size: int = 4096) -> Tensor:
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, 2)
+        y = torch.as_tensor(y_obs, dtype=self.dtype).reshape(1, self.n_obs)
+        out = torch.empty(theta.shape[0], dtype=self.dtype)
+        for start in range(0, theta.shape[0], chunk_size):
+            stop = min(start + chunk_size, theta.shape[0])
+            residual = y - self.mean_curve(theta[start:stop])
+            out[start:stop] = -0.5 * (residual**2).sum(-1) / self.noise**2 - self.n_obs * math.log(
+                self.noise * math.sqrt(2 * math.pi)
+            )
+        return out
+
+    def grid_posterior(self, y_obs: Tensor, resolution: int = 100) -> Tuple[Tensor, Tensor]:
+        """Reference posterior on a grid over the prior box, by quadrature."""
+        beta_axis = torch.linspace(*self.beta_range, resolution, dtype=self.dtype)
+        gamma_axis = torch.linspace(*self.gamma_range, resolution, dtype=self.dtype)
+        grid = torch.stack(torch.meshgrid(beta_axis, gamma_axis, indexing="ij"), dim=-1).reshape(-1, 2)
+        log_post = self.log_likelihood(grid, y_obs)
+        weights = torch.softmax(log_post.double(), dim=0).to(self.dtype)
+        return grid, weights
+
+    def in_support(self, theta: Tensor) -> Tensor:
+        """Whether each row lies inside the prior box -- for rejecting NPE leakage."""
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, 2)
+        lo = torch.tensor([self.beta_range[0], self.gamma_range[0]], dtype=theta.dtype)
+        hi = torch.tensor([self.beta_range[1], self.gamma_range[1]], dtype=theta.dtype)
+        return ((theta >= lo) & (theta <= hi)).all(dim=-1)
+
+    @property
+    def basic_reproduction_number_range(self) -> Tuple[float, float]:
+        r"""The range of :math:`R_0 = \beta/\gamma` implied by the prior box."""
+        return (self.beta_range[0] / self.gamma_range[1], self.beta_range[1] / self.gamma_range[0])

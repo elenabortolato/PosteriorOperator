@@ -292,6 +292,67 @@ class PosteriorSample(ConditionalDistribution):
             rank=self._rank,
         )
 
+    def bootstrap_functional(
+        self,
+        f: Callable[[Tensor], Tensor],
+        n_resamples: int = 200,
+        alpha: float = 0.05,
+        generator: Optional[torch.Generator] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        r"""Percentile confidence interval for :math:`\widehat{T}_f(y_0)`, by resampling draws.
+
+        Resamples the parameter draws with replacement, keeping the fitted
+        networks fixed, and recomputes the functional. This is a *confidence*
+        interval for the estimate, not a credible interval for
+        :math:`\Theta` -- :meth:`credible_interval` is the latter.
+
+        What it captures and what it misses matters. It quantifies the Monte
+        Carlo error of the final average over draws, which is the
+        parametric-rate part of the estimator. It does **not** capture the
+        error in :math:`(\hat u, \hat v, \hat\sigma)`, because the networks are
+        held fixed. Since :math:`T_f(y_0)` *evaluates* the learned
+        :math:`\hat u` at one fixed :math:`y_0` rather than averaging it over
+        the population, that second component does not vanish at
+        :math:`n^{-1/2}` in general, and no amount of resampling the draws
+        recovers it. Expect this interval to under-cover; ``examples/lfi/
+        07_functional_confidence_intervals.py`` measures by how much.
+
+        Args:
+            f: the functional, as in :meth:`functional`.
+            n_resamples: bootstrap replicates.
+            alpha: two-sided level, so the interval is the ``alpha/2`` and
+                ``1 - alpha/2`` percentiles of the replicates.
+            generator: RNG for the resampling.
+
+        Returns:
+            ``(estimate, interval)`` of shapes ``(n_x, k)`` and ``(n_x, k, 2)``.
+        """
+        if n_resamples < 2:
+            raise ValueError(f"n_resamples must be at least 2, got {n_resamples}")
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"alpha must lie in (0, 1), got {alpha}")
+        values = f(self.atoms)
+        values = values.reshape(self.n_atoms, -1).to(self.weights.dtype)
+        estimate = self.weights @ values
+
+        replicates = torch.empty(n_resamples, *estimate.shape, dtype=estimate.dtype)
+        # Resamples are processed in blocks rather than one at a time: the loop
+        # body is tiny, so Python overhead otherwise dominates the cost.
+        n_x = self.weights.shape[0]
+        block = max(1, min(n_resamples, 4_000_000 // max(n_x * self.n_atoms, 1)))
+        for start in range(0, n_resamples, block):
+            size = min(block, n_resamples - start)
+            idx = torch.randint(self.n_atoms, (size, self.n_atoms), generator=generator)
+            # Renormalising keeps each replicate a weighting of the same total
+            # mass, so the spread reflects the draws and not the resample size.
+            resampled = self.weights[:, idx]  # (n_x, size, n_atoms)
+            resampled = resampled / resampled.sum(dim=-1, keepdim=True)
+            replicates[start : start + size] = torch.einsum("xbm,bmk->bxk", resampled, values[idx])
+
+        levels = torch.tensor([alpha / 2, 1 - alpha / 2], dtype=estimate.dtype)
+        bounds = torch.quantile(replicates, levels, dim=0)  # (2, n_x, k)
+        return estimate, bounds.permute(1, 2, 0)
+
     def effective_sample_size(self) -> Tensor:
         r"""Kish effective sample size :math:`(\sum_i w_i)^2 / \sum_i w_i^2`.
 
@@ -535,6 +596,10 @@ class PosteriorOperator:
     def singular_function_data(self, y_obs: Tensor, rank: Optional[int] = None) -> Tensor:
         r"""Evaluate the left singular functions :math:`\hat u_k(y)`."""
         return self.operator.embed_x(self._prepare_data(y_obs), rank=rank)
+
+    def parameter_count(self) -> int:
+        """Number of trainable parameters, for like-for-like cost comparisons."""
+        return sum(p.numel() for p in self.operator.parameters() if p.requires_grad)
 
     def __repr__(self) -> str:
         state = "fitted" if self.operator.is_fitted else "unfitted"
