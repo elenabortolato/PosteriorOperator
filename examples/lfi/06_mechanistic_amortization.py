@@ -343,22 +343,33 @@ def _plot(sim, operator, npe, y_obs, theta_true, references, npe_draws, inside) 
     centres = 0.5 * (edges[1:] + edges[:-1])
     width = float(edges[1] - edges[0])
 
-    exact_r0 = r0(grid)
-    exact_hist = torch.zeros(60)
-    idx = (torch.bucketize(exact_r0.contiguous(), edges, right=True) - 1).clamp(0, 59)
-    exact_hist.index_add_(0, idx, exact_weights)
-    ax.step(centres, exact_hist / width, where="mid", color="#111827", lw=2, label="exact")
+    def weighted_histogram(values: torch.Tensor, weights: torch.Tensor):
+        """Mass per bin, DISCARDING out-of-range values rather than clamping them.
 
-    ncp_r0 = r0(single.theta)
-    ncp_hist = torch.zeros(60)
-    idx = (torch.bucketize(ncp_r0.contiguous(), edges, right=True) - 1).clamp(0, 59)
-    ncp_hist.index_add_(0, idx, single.as_probability().weights[0])
-    ax.step(centres, ncp_hist / width, where="mid", color="#1d4ed8", ls="--", lw=2, label="NCP")
+        Clamping would pile every R0 above the axis limit into the last bin and
+        show it as a spurious spike at the edge; the excluded mass is reported
+        in the legend instead.
+        """
+        within = (values >= edges[0]) & (values < edges[-1])
+        hist = torch.zeros(60)
+        idx = torch.bucketize(values[within].contiguous(), edges, right=True) - 1
+        hist.index_add_(0, idx.clamp(0, 59), weights[within])
+        return hist, 1.0 - float(weights[within].sum() / weights.sum().clamp_min(1e-12))
+
+    exact_hist, exact_out = weighted_histogram(r0(grid), exact_weights)
+    ax.step(centres, exact_hist / width, where="mid", color="#111827", lw=2,
+            label=f"exact ({exact_out:.1%} off-axis)")
+
+    ncp_weights = single.as_probability().weights[0]
+    ncp_hist, ncp_out = weighted_histogram(r0(single.theta), ncp_weights)
+    ax.step(centres, ncp_hist / width, where="mid", color="#1d4ed8", ls="--", lw=2,
+            label=f"NCP ({ncp_out:.1%} off-axis)")
 
     kept = npe_draws[which][inside[which]]
-    npe_hist = torch.histc(r0(kept), bins=60, min=0.0, max=12.0)
-    ax.step(centres, npe_hist / (npe_hist.sum() * width), where="mid", color="#b45309", ls=":",
-            lw=2, label="NPE")
+    npe_values = r0(kept)
+    npe_hist, npe_out = weighted_histogram(npe_values, torch.full_like(npe_values, 1.0 / npe_values.numel()))
+    ax.step(centres, npe_hist / width, where="mid", color="#b45309", ls=":", lw=2,
+            label=f"NPE ({npe_out:.1%} off-axis)")
     ax.axvline(float(r0(theta_true[which : which + 1])), color="#dc2626", lw=1.5, label="true R0")
     ax.axvline(1.0, color="#94a3b8", lw=1, ls="-.", label="takeoff threshold")
     ax.set_xlabel("R0 = beta / gamma")

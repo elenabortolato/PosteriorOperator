@@ -1,0 +1,90 @@
+==============================================================================
+1. CCA reconstruction of the posterior mean
+==============================================================================
+canonical correlations: [0.966048 0.917376 0.786965]
+max |CCA reconstruction - Sigma_ThetaY Sigma_YY^-1 y_0| = 2.44e-15
+=> the canonical system does reproduce the posterior mean exactly.
+
+==============================================================================
+2. The exact spectrum of the deflated operator (scalar Gaussian pair)
+==============================================================================
+rho = 0.8;  rank(Sigma_ThetaY) = 1
+  operator diagonal in the Hermite basis: [1.0, 0.8, 0.64, 0.512, 0.4096, 0.32768, 0.26214, 0.20972]
+  rho^k                                 : [1.0, 0.8, 0.64, 0.512, 0.4096, 0.32768, 0.26214, 0.20972]
+  max off-diagonal entry: 3.68e-16
+  chi^2 from the truncated spectrum: 1.6996
+  chi^2 in closed form, rho^2/(1-rho^2): 1.7778
+=> sigma_k = rho^k for every k >= 1: a scalar Gaussian pair has a rank-1
+   cross-covariance but INFINITELY many non-zero singular values. The gap
+   between the two chi^2 values above is the tail k > 7 that was dropped.
+
+==============================================================================
+3. Rank-d truncation of the posterior mean
+==============================================================================
+
+[well separated]  canonical correlations rho = [0.6401 0.5287]   (r* = 2)
+  top 8 exact singular values : [0.6401 0.5287 0.4097 0.3384 0.2795 0.2622 0.2166 0.1789]
+  their multi-indices         : [(1, 0), (0, 1), (2, 0), (1, 1), (0, 2), (3, 0), (2, 1), (1, 2)]
+  linear direction e_1 (rho = 0.6401) sits at spectral position 1
+  linear direction e_2 (rho = 0.5287) sits at spectral position 2
+  rank-2 truncation keeps [(1, 0), (0, 1)]
+  condition rho_1^2 < rho_r*:  0.4097 < 0.5287  =>  exactness at d = r* HOLDS
+  exact RMS truncation error of E[Theta|Y] by rank:
+      d =   1: 0.5287
+      d =   2: 0.0000  <- exact
+      d =   4: 0.0000  <- exact
+  => exactness at d >= r* = 2, as the proposition claims.
+
+[r* = 3]  canonical correlations rho = [0.966  0.9174 0.787 ]   (r* = 3)
+  top 8 exact singular values : [0.966  0.9332 0.9174 0.9016 0.8862 0.871  0.8561 0.8416]
+  their multi-indices         : [(1, 0, 0), (2, 0, 0), (0, 1, 0), (3, 0, 0), (1, 1, 0), (4, 0, 0), (2, 1, 0), (0, 2, 0)]
+  linear direction e_1 (rho = 0.9660) sits at spectral position 1
+  linear direction e_2 (rho = 0.9174) sits at spectral position 3
+  linear direction e_3 (rho = 0.7870) sits at spectral position 14
+  rank-3 truncation keeps [(1, 0, 0), (2, 0, 0), (0, 1, 0)]
+  condition rho_1^2 < rho_r*:  0.9332 < 0.7870  =>  exactness at d = r* FAILS
+  exact RMS truncation error of E[Theta|Y] by rank:
+      d =   1: 1.2087
+      d =   2: 1.2087
+      d =   3: 0.7870
+      d =  13: 0.7870
+      d =  14: 0.0000  <- exact
+      d =  16: 0.0000  <- exact
+  => exactness needs d >= 14, NOT d >= r* = 3.
+
+  The reason: the top-d directions are ordered by singular value, and a
+  nonlinear Hermite direction of a strongly correlated canonical pair
+  (sigma = rho_1^2, rho_1^3, ...) can outrank a weakly correlated LINEAR
+  direction (sigma = rho_j). Truncating at r* then drops a linear
+  direction that E[Theta|Y] needs.
+
+  The sharp statement: rank-d truncation recovers E[Theta|Y] exactly iff
+      d >= #{ a != 0 : prod_i rho_i^{a_i} >= rho_{r*} },
+  which collapses to d >= r* exactly when rho_1^2 < rho_{r*} -- the first
+  case above. Otherwise the requirement is strictly larger, as in the
+  second, and it grows quickly as rho_1 -> 1.
+
+==============================================================================
+4. The learned operator vs the exact spectrum, as n grows
+==============================================================================
+exact top-8 spectrum : [0.966  0.9332 0.9174 0.9016 0.8862 0.871  0.8561 0.8416]
+exact sigma_1 (HGR maximal correlation) = 0.9660
+
+       n   sigma_1  err(sigma_1)   err(top 8)    chi^2   mean RMSE
+--------------------------------------------------------------------
+    5000    0.9665        0.0005       0.0252    15.66      0.0702
+   20000    0.9660        0.0000       0.0081    14.69      0.0402
+   80000    0.9657        0.0003       0.0231    14.49      0.0389
+--------------------------------------------------------------------
+direct regression of theta on y (Section 3, f = id): RMSE 0.0029
+prior-mean baseline:                                 RMSE 0.9156
+
+  The spectrum is recovered well, and sigma_1 to a few parts in a thousand.
+  The posterior mean is not: direct regression wins by a wide margin here,
+  which is the sharp form of the remark that rank-one truncation and direct
+  regression differ. On a Gaussian model the Hermite tail crowds the linear
+  directions out of the top of the spectrum, so the rank needed for the
+  posterior mean is far above r* (see check 3). When only one functional is
+  ever wanted, regress on it directly; the operator earns its cost when many
+  functionals are queried after training.
+

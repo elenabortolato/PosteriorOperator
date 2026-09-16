@@ -1,0 +1,88 @@
+f = identity, so T_f(y_0) = E[Theta | Y = y_0] is known in closed form.
+6 fixed observations, 20 independent repetitions of the
+whole pipeline per sample size. Architecture held FIXED at rank 8,
+width 32 -- the regime where a root-n guarantee is expected.
+
+======================================================================================
+Sampling distribution of T_hat_f(y_0) over repeated simulate-and-fit
+======================================================================================
+       n      RMSE    |bias|        sd  sd * sqrt(n)   bias/sd
+--------------------------------------------------------------------------------------
+    1000    0.0590    0.0178    0.0504         1.594      0.35
+    4000    0.0447    0.0148    0.0371         2.344      0.40
+   16000    0.0423    0.0137    0.0350         4.433      0.39
+--------------------------------------------------------------------------------------
+  'sd * sqrt(n)' is the diagnostic for (a): constant down the column means the
+  spread shrinks at the root-n rate, while a GROWING column means it shrinks
+  more slowly than that. 'bias/sd' is the diagnostic for (b): anything of
+  order a few tenths means bias is a substantial fraction of the spread, so
+  an interval that accounts only for the spread cannot be calibrated even if
+  it gets the spread exactly right.
+
+  rate between consecutive sample sizes (2.0 would be exactly root-n):
+    n 1000 -> 4000: sd ratio 1.36  (root-n would be 2.00)
+    n 4000 -> 16000: sd ratio 1.06  (root-n would be 2.00)
+
+======================================================================================
+Does the cheap draw-bootstrap interval cover T_f(y_0)?
+======================================================================================
+  The bootstrap resamples the stored parameter draws with the networks held
+  fixed, so it sees the Monte Carlo error of the final average but not the
+  error in (u_hat, v_hat, sigma_hat).
+
+       n   true sd   bootstrap sd   captured   coverage   nominal
+--------------------------------------------------------------------------------------
+    1000    0.0504         0.0609      121%       0.95      0.90
+    4000    0.0371         0.0312       84%       0.74      0.90
+   16000    0.0350         0.0154       44%       0.48      0.90
+--------------------------------------------------------------------------------------
+
+======================================================================================
+Growing capacity: the same experiment with rank and width scaled with n
+======================================================================================
+       n   rank  width      RMSE    |bias|        sd  sd * sqrt(n)
+--------------------------------------------------------------------------------------
+    1000      8     32    0.0612    0.0247    0.0553         1.748
+    4000     16     64    0.0242    0.0055    0.0193         1.220
+   16000     32    128    0.0177    0.0039    0.0137         1.732
+--------------------------------------------------------------------------------------
+  Note what happens to 'sd * sqrt(n)' here compared with the fixed-architecture
+  table: it stays roughly flat instead of growing, and the RMSE keeps falling
+  rather than plateauing. Capacity was grown by a factor of 2 each time n grew
+  by 4, so this is one schedule over three sample sizes, not a rate theorem --
+  but the contrast with the fixed-architecture column is large and consistent.
+
+======================================================================================
+Reading
+======================================================================================
+  The measured picture is the reverse of the expected one, and the reversal
+  is the useful result.
+
+  In the FIXED-ARCHITECTURE regime -- the one predicted to give root-n -- the
+  spread does NOT shrink at root-n: 'sd * sqrt(n)' grows steadily and the RMSE
+  plateaus. Two things cause it. A rank-8 network is not a correctly specified
+  parametric family for this operator (its exact spectrum is infinite), so
+  there is an approximation floor no amount of data removes; and the residual
+  spread across replicates is driven by where the non-convex fit lands, which
+  is a function of initialisation rather than of n and so does not shrink at
+  all. The M-estimation argument needs a unique, well-separated population
+  minimiser that the optimiser actually reaches -- with a neural parametrisation
+  neither premise holds, and that gap is what shows up here.
+
+  In the GROWING-CAPACITY regime -- the one predicted to be slower -- the error
+  keeps falling and tracks root-n over this range, because the approximation
+  error is still the dominant, shrinking term.
+
+  Consequence for the interval: the draw-bootstrap degrades from usable to
+  badly overconfident as n grows (90% nominal covering about half the time at
+  the largest n), and it degrades precisely BECAUSE it is correct about the
+  part it measures. Its width falls like n^{-1/2} while the true spread
+  plateaus, so the two diverge. Report it as a Monte Carlo error bar on the
+  averaging step, which is what it is, not as a confidence interval for
+  T_f(y_0).
+
+  For the write-up this suggests stating the fixed-architecture result as an
+  interval for the best rank-d approximation of T_f(y_0) -- conditional on the
+  learned subspace -- rather than for T_f(y_0) itself, and being explicit that
+  optimisation variability is a third error source alongside approximation and
+  sampling. It is checkable, and it is what the experiment supports.

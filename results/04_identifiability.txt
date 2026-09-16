@@ -1,0 +1,68 @@
+================================================================================
+1. sigma_1 = maximal correlation; v_1 = the identified direction
+================================================================================
+  model: y_j ~ N(theta_1 + theta_2, 1.0^2), j = 1..10; theta ~ N(0, I_2)
+  only theta_1 + theta_2 is identified; theta_1 - theta_2 keeps its prior exactly.
+
+  sigma_1 estimated : 0.9758
+  sigma_1 exact     : 0.9759   (error 0.0001)
+  sigma_2 estimated : 0.9538   (exact rho_1^2 = 0.9524, the SQUARED Hermite direction
+                       of the same identified feature -- not a second one)
+
+  v_1 direction recovered by least squares : [+0.7074, +0.7068]
+  identified direction (1,1)/sqrt(2)       : [+0.7071, +0.7071]
+  |cos angle| between them                 : 1.0000
+  fraction of v_1 not explained by a linear function of theta: 0.0017
+
+  posterior spread along each direction (200 observations):
+    identified   (1, 1)/sqrt2: estimated sd 0.2170   exact 0.2182
+    unidentified (1,-1)/sqrt2: estimated sd 1.0011   exact 1.0000
+
+  => the unidentified direction keeps its prior sd of 1, and the fit says so
+     without being told which direction was identified.
+
+================================================================================
+2. chi^2 and the near-deterministic-simulator regime
+================================================================================
+  As the observation noise shrinks, the data pin the identified direction
+  down exactly, the joint law concentrates near a lower-dimensional
+  manifold, the density ratio leaves L^2(pi x mu) and sigma_1 -> 1.
+
+ noise sigma  exact sigma_1  est sigma_1  sum sigma_k^2      ESS
+----------------------------------------------------------------
+        2.00         0.9129       0.9128           3.03     9728
+        1.00         0.9759       0.9758           4.81     7507
+        0.50         0.9938       0.9938           6.76     5993
+        0.20         0.9990       0.9990           8.58     5292
+        0.05         0.9999       0.9999           9.90     4855
+----------------------------------------------------------------
+  sigma_1 climbing towards 1 while chi^2 keeps growing with the rank is the
+  warning sign. The remedy in that regime is to add observation noise or
+  coarsen y before fitting, not to raise the rank.
+
+================================================================================
+3. How the low-rank posterior degrades as the data get more informative
+================================================================================
+  The same MA(2) model with a longer series gives a tighter posterior. The
+  posterior location stays accurate; the reported spread does not.
+
+ series length T  concentration    chi^2   mean RMSE  sd ratio   sd ratio
+                (prior/post sd)                         signed    clipped
+--------------------------------------------------------------------------
+               5           1.4x     1.05      0.2542      1.18       1.20
+              15           2.2x     3.58      0.2726      1.21       1.59
+              50           4.7x     8.29      0.1308      1.63       2.92
+--------------------------------------------------------------------------
+  A sd ratio of 1.00 would be exact. Two things are visible:
+   * the ratio grows with concentration -- a posterior much tighter than the
+     prior needs a large chi^2, so the truncated spectrum falls short;
+   * clipping negative masses makes it markedly worse, because the negative
+     mass is what carves probability away from the prior's tails. Moment
+     functionals should therefore use the signed estimator, which is what
+     Eq. (2) actually specifies.
+
+  Practical reading: the low-rank operator is at its best for moderately
+  informative experiments and for low-order functionals. For tail quantiles
+  under highly informative data, either raise the rank substantially or fall
+  back to direct regression on the one functional wanted.
+

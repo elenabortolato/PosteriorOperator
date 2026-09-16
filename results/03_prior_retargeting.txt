@@ -1,0 +1,53 @@
+trained once on 40000 draws from the flat proposal q
+rank d = 48
+sigma_1 (HGR maximal correlation) = 0.9786
+sum sigma_k^2 (chi-square divergence) = 8.8516
+spectrum: 0.9786, 0.9437, 0.9295, 0.8795, 0.8102, 0.7952, 0.7529, 0.6978...
+
+======================================================================================
+retargeting the same fit to four priors, scored against exact quadrature
+======================================================================================
+target prior pi                     KL(pi||q)  mean |err|  P(t1>0) |err|     ESS   ESS %
+--------------------------------------------------------------------------------------
+flat (= the proposal q)                 0.000      0.1100         0.0833    4245   21.2%
+Gaussian at (0.6, 0.2), sd 0.5          0.532      0.3127         0.4321    3785   18.9%
+/home/user/PosteriorOperator/examples/lfi/03_prior_retargeting.py:92: UserWarning: signed masses cancelled to zero for at least one observation after reweighting, which happens when the target prior truncates the proposal's support; falling back to the clipped probability measure. Moment estimates from this object are no longer the signed Eq. (2) estimator. Call .as_probability() before .reweight() to opt in explicitly and silence this.
+  retargeted = source.reweight(log_w)
+Gaussian at (-1.0, 0.5), sd 0.3         1.382      0.4498         0.1985    1971    9.9%
+hard constraint theta_2 > 0             0.000      0.2404         0.2057    3702   18.5%
+--------------------------------------------------------------------------------------
+  ESS is out of 20000 stored draws.
+
+  The first row is the identity check: reweighting by a constant leaves the
+  posterior untouched, and its error is the low-rank fit's own error.
+
+  The rows below it carry a caveat worth stating in the write-up. The
+  identity E_pi[f|y] = E_q[f w|y] / E_q[w|y] is exact in population, but the
+  weights multiply the ESTIMATED proposal posterior, so the estimator's error
+  does not cancel -- it interacts with the weights. Because the low-rank
+  posterior is over-dispersed (see 04_identifiability.py), the product leans
+  on the new prior more than the truth does, and retargeting to a
+  concentrated prior AMPLIFIES the error rather than leaving it unchanged.
+  So the honest claim is: retargeting is free of retraining, not free of
+  error, and its accuracy degrades with how far pi sits from q.
+
+  The effective sample size is the companion diagnostic. The hard
+  constraint is the extreme case: it deletes the draws outside its support,
+  so the ESS falls to roughly the prior mass of the constraint.
+
+======================================================================================
+no-retraining check: is a retargeted fit as good as one trained under the prior?
+======================================================================================
+  target prior: Gaussian at (0.6, 0.2), sd 0.5
+  retargeted from the flat fit (20000 draws reweighted): mean |error| 0.3127
+  refitted on 11687 draws from that prior:          mean |error| 0.1072
+
+  The refit is 2.9x more accurate, and it lands at roughly the
+  flat fit's own error -- so the gap is the price of retargeting, not of the
+  smaller simulation budget. Retargeting buys the ability to answer a prior
+  chosen after training at no extra simulation cost; it does not match a
+  refit. Worth stating that way rather than as equivalence, and it suggests
+  the more ambitious route in the paper's Section 9 -- folding the weights
+  into the training objective itself, so the operator is fitted under the
+  target prior rather than corrected afterwards -- is the one that would
+  actually close this gap.

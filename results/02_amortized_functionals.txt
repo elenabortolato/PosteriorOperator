@@ -1,0 +1,57 @@
+trained once on 40000 simulator draws in 28s
+rank d = 48
+sigma_1 (HGR maximal correlation) = 0.9791
+sum sigma_k^2 (chi-square divergence) = 8.8317
+spectrum: 0.9791, 0.9428, 0.9279, 0.8790, 0.8096, 0.7953, 0.7464, 0.7030...
+
+conditioning on all 25 observations took 8.8 ms
+
+==============================================================================
+posterior functionals, all from the same fit
+==============================================================================
+functional                                mean |error|  max |error|     ms
+------------------------------------------------------------------------------
+mean                 f = theta                  0.1139       0.3467    0.1
+second moment        f = theta^2                0.1495       0.6256    0.1
+cross moment         f = t1*t2                  0.1463       0.4706    0.1
+P(theta_1 > 0)                                  0.0620       0.2844    0.1
+P(theta_2 > 0)                                  0.0697       0.4873    0.1
+P(theta in [0,1] x [-.5,.5])                    0.1099       0.3701    0.2
+posterior risk, abs loss at a=0                 0.0877       0.2708    0.0
+covariance (from the two above)                 0.0487       0.3317
+
+==============================================================================
+order statistics: CDF over a grid of t, then quantiles and an interval
+==============================================================================
+  theta_1: quantile mean |error| 0.3611 | 90% interval width 1.493 vs exact 0.417 (3.6x too wide) | covers the truth 1.00 of the time
+  theta_2: quantile mean |error| 0.2452 | 90% interval width 0.944 vs exact 0.408 (2.3x too wide) | covers the truth 0.96 of the time
+
+  The intervals are valid but conservative, by the factor shown: the
+  quantiles inherit the over-dispersion of the low-rank posterior, whereas
+  the moments and probabilities above do not. Tail queries are where the
+  truncation rank bites hardest.
+
+  marginal histogram of theta_1 over 8 bins, rows sum to 1.0000
+
+==============================================================================
+a decision: Bayes action under an asymmetric (check) loss
+==============================================================================
+  loss weights (tau = 0.25) make the Bayes action the 0.25 quantile
+  mean |NCP action - exact 0.25 quantile| = 0.1125
+  (the posterior mean would be off by 0.1458)
+
+==============================================================================
+what amortization buys
+==============================================================================
+  one training run:                           28 s
+  conditioning on 25 observations:           8.8 ms
+  each additional functional:        0.05-0.15  ms
+  11 functionals answered from one fit.
+  ratio: the slowest functional query costs 184,473x less than the fit it reuses.
+  A separate regression per functional would repeat the training cost
+  every time, and could not answer a functional chosen after the fact.
+
+  Caveat worth carrying into the write-up: the posterior *location* and
+  probabilities above are accurate, but the reported spread is wider than
+  the truth, and the gap grows with how much the posterior concentrates
+  relative to the prior -- see 04_identifiability.py for the measurement.
