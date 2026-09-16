@@ -46,7 +46,23 @@ from posterior_operator.simulators import SIR
 
 SEED = 0
 N_SIM = 30000
-RANK = 48
+# Chosen by measurement, not by default: a sweep over rank at this simulation
+# budget (reproduce it with --rank-sweep) gives
+#
+#   rank  mean err  R0 err  P err  extra density modes
+#     48    0.0361  0.1365 0.0516     2.30
+#    128    0.0310  0.0820 0.0275     3.55    <- best functionals
+#    256    0.0316  0.1503 0.0381    14.45
+#
+# so accuracy improves up to about 128 and degrades past it, as the whitening
+# step's plug-in canonical correlations start fitting noise (its upward bias
+# grows like sqrt(d/n), about 0.09 at d=256, n=30000; chi^2 doubles from 43 to
+# 85 while accuracy falls). Note the last column moves the OTHER way: raising
+# the rank buys better functionals and a worse density shape, because the extra
+# singular directions are higher-frequency and a smooth f averages their ripple
+# away while the density does not.
+RANK = 128
+LAYER_SIZE = 128
 N_OBS = 40
 EPOCHS = 400
 GRID_RESOLUTION = 140
@@ -98,12 +114,12 @@ def main() -> None:
 
     # --- fit the two amortised methods once each ----------------------------
     torch.manual_seed(SEED)
-    operator = PosteriorOperator(theta_dim=2, data_dim=sim.data_dim, rank=RANK, layer_size=64)
+    operator = PosteriorOperator(theta_dim=2, data_dim=sim.data_dim, rank=RANK, layer_size=LAYER_SIZE)
     start = time.perf_counter()
     operator.fit(theta, y, epochs=EPOCHS, lr=1e-3, seed=SEED)
     ncp_train = time.perf_counter() - start
 
-    npe = NeuralPosteriorEstimator(theta_dim=2, data_dim=sim.data_dim, n_components=10, layer_size=64)
+    npe = NeuralPosteriorEstimator(theta_dim=2, data_dim=sim.data_dim, n_components=10, layer_size=LAYER_SIZE)
     start = time.perf_counter()
     npe.fit(theta, y, epochs=EPOCHS, lr=1e-3, seed=SEED)
     npe_train = time.perf_counter() - start
@@ -152,7 +168,7 @@ def main() -> None:
     ncp_value = posterior.functional(lambda t: t)
     npe_value = npe.mean(y_obs)
     start = time.perf_counter()
-    reg = DirectRegression(data_dim=sim.data_dim, output_dim=2, layer_size=64)
+    reg = DirectRegression(data_dim=sim.data_dim, output_dim=2, layer_size=LAYER_SIZE)
     reg.fit(y, theta, epochs=EPOCHS, seed=SEED)
     regression_times.append(time.perf_counter() - start)
     rows["mean (beta, gamma)"] = (ncp_value, npe_value, reg.predict(y_obs), theta.mean(0, keepdim=True))
@@ -161,7 +177,7 @@ def main() -> None:
     ncp_value = posterior.functional(lambda t: r0(t).unsqueeze(-1))
     npe_value = npe_functional(lambda t: r0(t).unsqueeze(-1))
     start = time.perf_counter()
-    reg_r0 = DirectRegression(data_dim=sim.data_dim, output_dim=1, layer_size=64)
+    reg_r0 = DirectRegression(data_dim=sim.data_dim, output_dim=1, layer_size=LAYER_SIZE)
     reg_r0.fit(y, r0(theta).unsqueeze(-1), epochs=EPOCHS, seed=SEED)
     regression_times.append(time.perf_counter() - start)
     rows["mean R0"] = (ncp_value, npe_value, reg_r0.predict(y_obs), r0(theta).mean().reshape(1, 1))
@@ -170,7 +186,7 @@ def main() -> None:
     ncp_value = posterior.functional(lambda t: (r0(t) > 1).to(t.dtype).unsqueeze(-1))
     npe_value = npe_functional(lambda t: (r0(t) > 1).to(t.dtype).unsqueeze(-1))
     start = time.perf_counter()
-    reg_p = DirectRegression(data_dim=sim.data_dim, output_dim=1, layer_size=64)
+    reg_p = DirectRegression(data_dim=sim.data_dim, output_dim=1, layer_size=LAYER_SIZE)
     reg_p.fit(y, (r0(theta) > 1).to(theta.dtype).unsqueeze(-1), epochs=EPOCHS, seed=SEED)
     regression_times.append(time.perf_counter() - start)
     rows["P(R0 > 1)"] = (
