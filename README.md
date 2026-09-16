@@ -362,6 +362,68 @@ The same mechanism is the likeliest explanation for the "valid but 2–4× too
 wide" MA(2) intervals noted above: on a quick MA(2) check the 90% interval for
 $\theta_1$ goes from $(-0.43, 1.73)$ clipped to $(0.74, 1.51)$ isotonic.
 
+### Which regime favours the operator over NPE?
+
+`lfi/09_conjugate_exact_truth.py`. Dirichlet–Multinomial, so the posterior is
+**exactly** Dirichlet($\alpha + y$) — no grid, no MCMC chain, no ABC tolerance,
+nothing for a reviewer to question. Not the Gaussian conjugate model, because a
+Gaussian posterior is precisely what a mixture density network represents and
+that hands NPE a correctly specified hypothesis class; on the simplex the
+marginals are Beta and neither method contains the truth. $W_1$ to the exact
+marginal, in units of the prior sd; 40k simulations shared; rank 64.
+
+**Dimension, with $\chi^2$ held near 5.** Holding `n_trials` fixed instead
+confounds the axes — the same observations spread over more cells, so $\chi^2$
+climbs with $K$ (41 → 534 → ~260000 for $K$ = 3, 5, 10 at $N$ = 100). Trials are
+tuned per $K$ so only the dimension moves:
+
+| dim | χ² | post/prior sd | prior-only | NCP | NPE | NCP cov | NPE cov |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 5.67 | 0.520 | 0.8396 | **0.0264** | 0.0269 | 0.860 | 0.800 |
+| 4 | 5.05 | 0.738 | 0.5705 | 0.0449 | **0.0389** | 0.875 | 0.885 |
+| 9 | 4.62 | 0.889 | 0.3825 | **0.0704** | 0.0792 | **0.900** | 0.933 |
+| 19 | 5.32 | 0.939 | 0.2580 | **0.0723** | 0.1332 | **0.897** | 0.939 |
+
+**There is no geometric decay in the dimension.** NCP's error plateaus from 9 to
+19 dimensions (+3%) while NPE's accelerates (+68%), so at 19 the operator is
+ahead by 1.8× at exactly nominal coverage. The natural worry — that reweighting
+a *fixed* set of prior draws must collapse as $p$ grows — is wrong at fixed
+$\chi^2$, and the `post/prior` column shows why: holding $\chi^2$ fixed while
+adding parameters pushes the posterior back towards the prior, which is exactly
+where prior atoms are dense. The mechanism favouring the operator is that it
+never estimates a density over $\theta$ at all; a marginal is a weighted average,
+one-dimensional however large $p$ is, while NPE must fit a 19-dimensional joint.
+
+The `prior-only` column is the control, since at low $\chi^2$ an estimator could
+score well by doing nothing. Both methods beat it everywhere; at 19 dimensions
+NCP captures ~72% of the available improvement over the prior against NPE's 48%.
+
+**Concentration, at fixed dimension 4:**
+
+| N | χ² | σ̂₁ | NCP | NPE | NCP/NPE |
+| --- | --- | --- | --- | --- | --- |
+| 2 | 0.95 | 0.416 | **0.0269** | 0.0438 | 0.61 |
+| 5 | 2.87 | 0.589 | **0.0453** | 0.0500 | 0.91 |
+| 8 | 5.05 | — | 0.0449 | **0.0389** | 1.15 |
+| 15 | 15.1 | 0.783 | 0.0620 | **0.0411** | 1.51 |
+| 50 | 130 | 0.916 | 0.1117 | **0.0318** | 3.51 |
+| 250 | 3700 | 0.981 | 0.2295 | **0.0158** | 14.55 |
+
+Monotone across four orders of magnitude in $\chi^2$, no reversal. NCP's absolute
+error *climbs* (0.027 → 0.230) while NPE's is roughly flat (0.044 → 0.016), so
+this is the operator degrading as information arrives, not NPE improving —
+$\chi^2$ is the mass a rank-$d$ SVD must capture, and at $\chi^2 = 3700$ rank 64
+cannot.
+
+**The rule.** Prefer the operator when $\chi^2$ is small, and the $\chi^2$ you can
+afford grows with dimension: the crossover is near $\chi^2 \approx 4$ at 4
+dimensions, but NCP still wins at $\chi^2 = 5.3$ at 19. Both quantities come from
+the fit itself — $\chi^2 = \sum_k\hat\sigma_k^2$, or $\hat\sigma_1$ alone, which
+tracks the crossover just as well (0.42, 0.59, 0.78, 0.92, 0.98) and is free. So
+the honest claim is conditional and checkable rather than unconditional: **many
+weakly-informed parameters favour the operator; few sharply-informed ones favour
+NPE.**
+
 ### Does σ_k decay as assumed?
 
 `lfi/05_spectrum_decay.py` fits both decay laws on MA(2), AR(2) and g-and-k,
