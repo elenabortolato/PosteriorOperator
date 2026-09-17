@@ -64,6 +64,10 @@ TRUNCATIONS = (1, 2, 4, 8, 16, 32, 64, 128)
 # green/red pair used in the earlier figures fails at dE 3.9 for deuteranopia.
 # Line style carries the same distinction, so identity is never colour alone.
 NCP_COLOUR, NPE_COLOUR, TRUTH_COLOUR = "#1f77b4", "#ff7f0e", "0.80"
+# chi^2 is an ordered magnitude, so its three levels get a single-hue ramp
+# (light -> dark) rather than three categorical hues, with marker shape as the
+# secondary encoding so the ordering survives a greyscale print.
+CHI2_RAMP = ("#9ecae1", "#4292c6", "#08306b")
 
 
 # --------------------------------------------------------------------------- #
@@ -303,45 +307,70 @@ def make_figures(collected, panels):
     figures.mkdir(exist_ok=True)
 
     # ------------------------------------------------ figure 1: calibration
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.4))
+    # Once the spectrum is exhausted the reported tail is ~0, which on a log
+    # axis would swallow the entire informative range. Those points are real
+    # and are shown, but pinned to the axis floor and labelled, rather than
+    # allowed to set the scale.
+    def split(reported, other):
+        alive = reported > 1e-3
+        return alive, ~alive
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
     markers = {"chi2 ~ 1": "o", "chi2 ~ 5": "s", "chi2 ~ 130": "^"}
-    ax = axes[0]
-    limits = [1e9, 0.0]
+    colours = dict(zip(collected.keys(), CHI2_RAMP))
+
+    series = {}
     for label, per_seed in collected.items():
-        reported = np.array([[r["reported"] for r in s[0]] for s in per_seed]).mean(0)
-        realised = np.array([[r["realised"] for r in s[0]] for s in per_seed]).mean(0)
-        keep = reported > 0
-        ax.plot(realised[keep], reported[keep], markers[label], ms=7, lw=1.4,
-                color=NCP_COLOUR, mfc="none" if label != "chi2 ~ 5" else NCP_COLOUR,
-                ls="-" if label == "chi2 ~ 5" else "--", label=label)
-        limits = [min(limits[0], realised[keep].min(), reported[keep].min()),
-                  max(limits[1], realised[keep].max(), reported[keep].max())]
-    span = [limits[0] * 0.6, limits[1] * 1.6]
-    ax.plot(span, span, color="0.3", lw=1.2, ls=":", label="perfect calibration")
+        series[label] = (
+            np.array([[r["reported"] for r in s_[0]] for s_ in per_seed]).mean(0),
+            np.array([[r["realised"] for r in s_[0]] for s_ in per_seed]).mean(0),
+            np.array([[r["w1"] for r in s_[0]] for s_ in per_seed]).mean(0),
+        )
+
+    live = np.concatenate([r[r > 1e-3] for r, _, _ in series.values()])
+    real_all = np.concatenate([x for _, x, _ in series.values()])
+    low = min(live.min(), real_all.min()) * 0.45
+    high = max(live.max(), real_all.max()) * 1.8
+
+    ax = axes[0]
+    ax.plot([low, high], [low, high], color="0.35", lw=1.2, ls=":", zorder=1,
+            label="perfect calibration")
+    for label, (reported, realised, _) in series.items():
+        alive, dead = split(reported, realised)
+        ax.plot(realised[alive], reported[alive], marker=markers[label], ms=8, lw=1.6,
+                color=colours[label], label=label, zorder=3)
+        if dead.any():
+            ax.scatter(realised[dead], np.full(dead.sum(), low * 1.35), marker="v", s=55,
+                       color=colours[label], edgecolor="white", linewidth=0.8, zorder=4)
+    ax.axhspan(low, low * 1.9, color="0.93", zorder=0)
+    ax.text(high * 0.92, low * 2.2, "spectrum exhausted:\nreported tail $\\to$ 0",
+            ha="right", va="bottom", fontsize=8, color="0.35")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_xlim(span)
-    ax.set_ylim(span)
-    ax.set_xlabel(r"true truncation error  $\|\hat r_d - r\|_{L^2}$")
-    ax.set_ylabel(r"reported  $(\sum_{k>d}\hat\sigma_k^2)^{1/2}$")
+    ax.set_xlim(low, high)
+    ax.set_ylim(low, high)
+    ax.set_xlabel(r"true truncation error  $\|\hat r_d - r\|_{L^2(\pi\times\mu)}$")
+    ax.set_ylabel(r"reported from the fit  $(\sum_{k>d}\hat\sigma_k^2)^{1/2}$")
     ax.set_title("the spectrum reporting its own error", fontsize=10)
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=8, frameon=False, loc="upper left")
     ax.grid(alpha=0.25, lw=0.6)
 
     ax = axes[1]
-    for label, per_seed in collected.items():
-        reported = np.array([[r["reported"] for r in s[0]] for s in per_seed]).mean(0)
-        w1 = np.array([[r["w1"] for r in s[0]] for s in per_seed]).mean(0)
-        keep = reported > 0
-        ax.plot(reported[keep], w1[keep], markers[label], ms=7, lw=1.4,
-                color=NCP_COLOUR, mfc="none" if label != "chi2 ~ 5" else NCP_COLOUR,
-                ls="-" if label == "chi2 ~ 5" else "--", label=label)
+    for label, (reported, _, w1) in series.items():
+        alive, dead = split(reported, w1)
+        ax.plot(reported[alive], w1[alive], marker=markers[label], ms=8, lw=1.6,
+                color=colours[label], label=label, zorder=3)
+        if dead.any():
+            ax.scatter(np.full(dead.sum(), low * 1.35), w1[dead], marker="<", s=55,
+                       color=colours[label], edgecolor="white", linewidth=0.8, zorder=4)
+    ax.axvspan(low, low * 1.9, color="0.93", zorder=0)
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_xlabel(r"reported  $(\sum_{k>d}\hat\sigma_k^2)^{1/2}$")
+    ax.set_xlim(low, high)
+    ax.set_xlabel(r"reported from the fit  $(\sum_{k>d}\hat\sigma_k^2)^{1/2}$")
     ax.set_ylabel(r"posterior marginal error  $W_1$ / prior sd")
-    ax.set_title("and predicting the answer's error", fontsize=10)
-    ax.legend(fontsize=8, frameon=False)
+    ax.set_title("and ordering the answer's error", fontsize=10)
+    ax.legend(fontsize=8, frameon=False, loc="upper left")
     ax.grid(alpha=0.25, lw=0.6)
     fig.tight_layout()
     fig.savefig(figures / "self_certification.png", dpi=150)
@@ -392,8 +421,16 @@ def make_figures(collected, panels):
 
 
 def main() -> None:
-    collected = part_calibration()
-    panels = accuracy_by_dimension()
+    import sys
+
+    cache = Path(__file__).resolve().parent / ".10_self_certification_cache.pt"
+    if "--figures-only" in sys.argv and cache.exists():
+        payload = torch.load(cache, weights_only=False)
+        collected, panels = payload["collected"], payload["panels"]
+    else:
+        collected = part_calibration()
+        panels = accuracy_by_dimension()
+        torch.save({"collected": collected, "panels": panels}, cache)
     make_figures(collected, panels)
 
     print("=" * 88)
