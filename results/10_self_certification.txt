@@ -1,0 +1,81 @@
+========================================================================================
+1. Does the reported tail equal the true truncation error?
+========================================================================================
+  reported = sqrt(sum_{k>d} sigma_hat_k^2), from the fit alone.
+  realised = || r_d - r ||_{L2(pi x mu)}, against the CLOSED-FORM ratio.
+  Parseval says these are the same number. Any gap is estimation error
+  in sigma_hat, not a modelling choice.
+
+[chi2 ~ 1]  K=5, N=2, dim=4   (172s, 3 seeds)
+  true chi^2 =   0.820   sum sigma_hat^2 =   0.836   captured 101.9%
+    rank   reported   realised   ratio   W1 to exact
+  --------------------------------------------------
+       1     0.8113     0.8070    1.01        0.2904
+       2     0.6977     0.6947    1.00        0.2499
+       4     0.3960     0.3806    1.04        0.0527
+       8     0.2866     0.3206    0.89        0.0491
+      16     0.0000     0.1970    0.00        0.0318
+      32     0.0000     0.1970    0.00        0.0318
+      64     0.0000     0.1970    0.00        0.0318
+     128     0.0000     0.1970    0.00        0.0318
+
+[chi2 ~ 5]  K=5, N=8, dim=4   (225s, 3 seeds)
+  true chi^2 =   5.197   sum sigma_hat^2 =   5.256   captured 101.1%
+    rank   reported   realised   ratio   W1 to exact
+  --------------------------------------------------
+       1     2.1904     2.1764    1.01        0.4901
+       2     2.0840     2.0691    1.01        0.4241
+       4     1.8590     1.8404    1.01        0.1711
+       8     1.6502     1.6497    1.00        0.1331
+      16     1.2590     1.2819    0.98        0.0730
+      32     0.8314     0.9821    0.85        0.0592
+      64     0.3562     0.8420    0.42        0.0516
+     128     0.0000     0.8243    0.00        0.0505
+
+[chi2 ~ 130]  K=5, N=50, dim=4   (238s, 3 seeds)
+  true chi^2 = 113.031   sum sigma_hat^2 =  34.673   captured 30.7%
+    rank   reported   realised   ratio   W1 to exact
+  --------------------------------------------------
+       1     5.8167    10.5725    0.55        0.7428
+       2     5.7443    10.5321    0.55        0.6431
+       4     5.5974    10.4530    0.54        0.3923
+       8     5.3488    10.3175    0.52        0.3452
+      16     4.8532    10.0756    0.48        0.2283
+      32     3.9400     9.6719    0.41        0.1452
+      64     2.3108     9.1485    0.25        0.0953
+     128     0.0000     8.8432    0.00        0.0793
+
+========================================================================================
+2. What that accuracy looks like, as the dimension grows
+========================================================================================
+  chi^2 held near 5 throughout (n_trials tuned per K), so only the
+  dimension moves. These are the settings the diagnostic calls sound.
+
+   K  dim  chi^2 rep  prior W1   NCP W1   NPE W1  NCP cov  NPE cov
+----------------------------------------------------------------------
+   3    2       5.10    0.8097   0.0261   0.0275    0.912    0.863
+   5    4       4.58    0.6115   0.0484   0.0427    0.881    0.875
+  10    9       3.23    0.3948   0.0653   0.0824    0.881    0.911
+  20   19       2.51    0.2543   0.0733   0.1331    0.897    0.934
+
+figures written to /home/user/PosteriorOperator/figures/self_certification.png and /home/user/PosteriorOperator/figures/accuracy_by_dimension.png
+========================================================================================
+Reading
+========================================================================================
+  The left panel of the first figure is the claim. If the points sit on the
+  diagonal, the fitted spectrum is an honest report of the fit's own error,
+  and a user can read it off without owning a reference posterior. Points
+  BELOW the diagonal mean the fit is flattering itself -- the tail it can
+  see stops at its own rank, so whatever mass the truncation never captured
+  is invisible to it. The 'captured' percentage above says how much of the
+  true chi^2 the fit accounts for, and that is the honest ceiling on how
+  much of its error it can possibly report.
+
+  The right panel is what makes it useful rather than merely true: the same
+  reported number ordering the actual error in the posterior marginals.
+
+  The second figure answers what the error numbers mean. A W_1 of 0.07 in
+  units of the prior standard deviation is hard to interpret in the
+  abstract; the marginals show it directly, and show NPE's curves drifting
+  off the exact posterior as the dimension grows while the operator's stay
+  on it.
