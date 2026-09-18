@@ -11,3 +11,5 @@ dist/
 
 # Cached fit results for examples/lfi/10 (regenerate with the script)
 examples/lfi/.10_self_certification_cache.pt
+
+examples/lfi/.14_multimodal_cache.pt

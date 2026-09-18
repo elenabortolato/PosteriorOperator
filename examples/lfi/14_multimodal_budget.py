@@ -53,7 +53,6 @@ PAIRED_EPOCHS = 150
 NPE_COMPONENTS = 10
 
 NCP_COLOUR, NPE_COLOUR, TRUTH_COLOUR = "#1f77b4", "#ff7f0e", "0.80"
-RANK_RAMP = ("#9ecae1", "#4292c6", "#08306b")
 
 
 def w1_against_exact(grid, exact_cdf, atoms, masses):
@@ -105,6 +104,15 @@ def valley_excess(grid, exact_density, atoms, mass):
 
 
 def main() -> None:
+    import sys
+
+    cache = Path(__file__).resolve().parent / ".14_multimodal_cache.pt"
+    if "--figures-only" in sys.argv and cache.exists():
+        saved = torch.load(cache, weights_only=False)
+        _plot(saved["panels"], saved["npe_w1"], saved["npe_first"])
+        _plot(saved["paired"], saved["npe_w1"], saved["npe_first"],
+              name="multimodal_width.png", title="Rank AND width raised together")
+        return
     sim = SignAmbiguous(theta_dim=THETA_DIM, noise=0.6, n_obs=4, prior_mean=0.5)
     g = torch.Generator().manual_seed(SEED + 99)
     _, y_obs = sim.sample_joint(N_EVAL, generator=g)
@@ -217,6 +225,9 @@ def main() -> None:
     print("-" * 96)
     print(f"{BUDGETS[-1]:>9}{'NPE':>7}{'':>10}{'':>9}{npe_w1:>9.4f}{'':>9}{npe_elapsed:>8.0f}")
 
+    cache = Path(__file__).resolve().parent / ".14_multimodal_cache.pt"
+    torch.save({"panels": panels, "paired": paired_panels, "npe_w1": npe_w1,
+                "npe_first": draws[0, :, 0]}, cache)
     _plot(panels, npe_w1, draws[0, :, 0])
     _plot(paired_panels, npe_w1, draws[0, :, 0], name="multimodal_width.png",
           title="Rank AND width raised together")
@@ -260,7 +271,7 @@ def _plot(panels, npe_w1, npe_first, name="multimodal_budget.png",
         ax.fill_between(grid.numpy(), density.numpy(), color=TRUTH_COLOUR, label="exact")
         index = np.clip(np.digitize(atoms.numpy(), edges) - 1, 0, len(centres) - 1)
         height = np.bincount(index, weights=mass.numpy(), minlength=len(centres))
-        ax.plot(centres, height / np.diff(edges), color=RANK_RAMP[k], lw=2.0,
+        ax.plot(centres, height / np.diff(edges), color=NCP_COLOUR, lw=2.0,
                 label=f"NCP rank {panel['rank']}")
         ax.set_title(f"rank {panel['rank']}  ($W_1$ {panel['w1']:.3f})", fontsize=10)
         ax.set_xlabel(r"$\theta_1$")
