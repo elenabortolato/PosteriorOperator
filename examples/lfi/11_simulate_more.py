@@ -33,6 +33,13 @@ check uses only the fit, so a user can run it. Whether it actually detects
 under-capture is measurable here, because the true chi^2 is closed-form and
 the captured fraction can be computed.
 
+IT DOES NOT. The result below is that sigma_hat_D / sigma_hat_1 reads 0.000
+while the fit has captured 34% of the true chi^2, because a capacity-limited
+fit looks converged from the inside: the singular values collapse once the
+networks run out of representable directions, not once the true spectrum
+decays. The check is recorded here because it is the natural thing to reach
+for and it is wrong.
+
 Run:  python examples/lfi/11_simulate_more.py
 """
 
@@ -138,19 +145,37 @@ def main() -> None:
     print("=" * 92)
     print("Reading")
     print("=" * 92)
-    print("  Read DOWN a 'true@d' column: that is the effect of more simulations at a")
-    print("  FIXED rank. If it flattens, the truncation floor has been reached and more")
-    print("  data buys nothing -- the remedy is rank, not simulation. Read ACROSS a row:")
-    print("  that is the effect of more rank at a fixed budget.")
+    print("  The two configurations answer the question in OPPOSITE directions, and")
+    print("  that is the result.")
     print()
-    print("  The 'decay' column is the part a user can actually act on, since captured")
-    print("  needs the truth. If sigma_hat_D is still an appreciable fraction of")
-    print("  sigma_hat_1, the spectrum has not died within the rank that was fitted,")
-    print("  so there is mass beyond D that the fit cannot see and its reported tail")
-    print("  understates the error. Then D is too small -- and since the whitening's")
-    print("  plug-in bias grows like sqrt(d/n), raising D is what forces you to")
-    print("  simulate more. That is the honest version of 'simulate more': not a way")
-    print("  to reduce truncation error, but the price of the rank that does.")
+    print("  At chi^2 = 5, more simulations work -- but only at a rank where truncation")
+    print("  is already spent. Sixteen times the budget buys 8% at rank 8 and 68% at")
+    print("  rank 128. At low rank you are truncation-limited and data cannot help; at")
+    print("  high rank every remaining nat is estimation error, which data fixes. So")
+    print("  'simulate more' pays in proportion to how much of the error is NOT")
+    print("  truncation, and the reported tail is what tells you that proportion.")
+    print()
+    print("  At chi^2 = 102, the same sixteen-fold increase buys 3%, and the captured")
+    print("  fraction actually FALLS (37.2% to 34.3%). Neither rank nor sample size is")
+    print("  binding there: the networks cannot represent the remaining directions, so")
+    print("  the fitted spectrum runs out of mass to place. Capacity is the untested")
+    print("  third knob.")
+    print()
+    print("  THE SELF-CHECK PROPOSED ABOVE DOES NOT WORK. sigma_hat_D / sigma_hat_1 is")
+    print("  0.003, 0.004, 0.000 down the chi^2 = 102 block -- the spectrum has")
+    print("  apparently died well inside the fitted rank, which was meant to certify")
+    print("  that D was generous -- while the fit captures barely a third of the true")
+    print("  chi^2. The check fails precisely because a capacity-limited fit looks")
+    print("  converged from the inside: its singular values collapse because the")
+    print("  networks have run out of representable directions, not because the true")
+    print("  spectrum has decayed. A decayed sigma_hat is therefore NOT evidence that")
+    print("  the rank was sufficient, and this diagnostic should not be used.")
+    print()
+    print("  What survives is the coarser one. sigma_1 is 0.92 here against 0.67 in the")
+    print("  benign configuration, and chi^2_hat is about 35 even understated threefold")
+    print("  -- both large, both observable, and example 09 already identifies that as")
+    print("  the regime where the method loses. The regime indicator works; the")
+    print("  fine-grained sufficiency check does not.")
 
 
 if __name__ == "__main__":

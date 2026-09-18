@@ -259,6 +259,8 @@ density network, i.e. NPE in its original form).
 | `lfi/07_functional_confidence_intervals.py` | frequentist coverage for $\widehat{T}_f(y_0)$; root-$n$ or not; the bootstrap's actual coverage |
 | `lfi/08_gandk_npe.py` | g-and-k, a model with no closed-form density: NCP vs NPE against a large-budget ABC reference |
 | `lfi/09_conjugate_exact_truth.py` | Dirichlet-Multinomial, posterior exact in closed form: which *regime* favours NCP over NPE |
+| `lfi/10_self_certification.py` | does the fitted spectrum report its own error? Calibration against a closed-form ratio |
+| `lfi/11_simulate_more.py` | when a larger simulation budget helps, when rank is the real constraint, and when neither is |
 
 Together these cover the experimental protocol. Note the division of labour
 between the two NPE comparisons: `06` uses SIR, which is mechanistic but has a

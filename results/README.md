@@ -22,6 +22,8 @@ to see the evidence without waiting for it.
 | `07_functional_confidence_intervals.txt` | `examples/lfi/07_...` | sampling distribution of T_hat_f(y_0); bootstrap coverage |
 | `08_gandk_npe.txt` | `examples/lfi/08_...` | **NPE on a genuinely intractable model**: g-and-k against a large-budget ABC reference, marginal accuracy, calibration, query cost |
 | `09_conjugate_exact_truth.txt` | `examples/lfi/09_...` | **exact truth, no reference error**: NCP vs NPE on a conjugate model, swept over parameter dimension and posterior concentration |
+| `10_self_certification.txt` | `examples/lfi/10_...` | **the central claim**: the reported spectral tail against the true truncation error, and what the accuracy looks like as the dimension grows |
+| `11_simulate_more.txt` | `examples/lfi/11_...` | when more simulations help and when they do not; a plausible rank self-check shown to FAIL |
 
 Runs are seeded, so re-running reproduces these files up to floating-point
 non-determinism in the threaded BLAS calls. Timings in the captured output are

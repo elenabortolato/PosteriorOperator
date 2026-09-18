@@ -1,0 +1,58 @@
+============================================================================================
+Does simulating more reduce the error the spectrum reports?
+============================================================================================
+  Every fit uses rank D = 128; the sample size is what varies.
+  'captured' is sum sigma_hat^2 / true chi^2, computable only because the
+  ratio is closed form here. 'decay' is sigma_hat_D / sigma_hat_1 -- the
+  OBSERVABLE proxy for whether the fitted rank was generous enough.
+
+[chi2 ~ 5]  K=5, N=8, dim=4
+    n_sim   captured   sigma_1   sigma_D    decay     rep@8    true@8    rep@32   true@32   rep@128  true@128
+-------------------------------------------------------------------------------------------------------------
+     5000    165.4%    0.7177    0.0000    0.000     2.356     1.797     1.463     1.813     0.000     2.110   [5s]
+    20000    110.2%    0.6863    0.0000    0.000     1.769     1.674     0.951     1.136     0.000     1.081   [12s]
+    80000     95.1%    0.6730    0.0000    0.000     1.564     1.647     0.741     0.927     0.000     0.666   [56s]
+  true chi^2 = 5.18
+
+[chi2 ~ 113]  K=5, N=50, dim=4
+    n_sim   captured   sigma_1   sigma_D    decay     rep@8    true@8    rep@32   true@32   rep@128  true@128
+-------------------------------------------------------------------------------------------------------------
+     5000     37.2%    0.9260    0.0032    0.003     5.614     9.812     4.169     9.266     0.000     8.555   [3s]
+    20000     35.0%    0.9189    0.0038    0.004     5.426     9.801     4.015     9.173     0.000     8.338   [12s]
+    80000     34.3%    0.9148    0.0001    0.000     5.369     9.789     3.971     9.157     0.000     8.296   [56s]
+  true chi^2 = 101.63
+
+============================================================================================
+Reading
+============================================================================================
+  The two configurations answer the question in OPPOSITE directions, and
+  that is the result.
+
+  At chi^2 = 5, more simulations work -- but only at a rank where truncation
+  is already spent. Sixteen times the budget buys 8% at rank 8 and 68% at
+  rank 128. At low rank you are truncation-limited and data cannot help; at
+  high rank every remaining nat is estimation error, which data fixes. So
+  'simulate more' pays in proportion to how much of the error is NOT
+  truncation, and the reported tail is what tells you that proportion.
+
+  At chi^2 = 102, the same sixteen-fold increase buys 3%, and the captured
+  fraction actually FALLS (37.2% to 34.3%). Neither rank nor sample size is
+  binding there: the networks cannot represent the remaining directions, so
+  the fitted spectrum runs out of mass to place. Capacity is the untested
+  third knob.
+
+  THE SELF-CHECK PROPOSED ABOVE DOES NOT WORK. sigma_hat_D / sigma_hat_1 is
+  0.003, 0.004, 0.000 down the chi^2 = 102 block -- the spectrum has
+  apparently died well inside the fitted rank, which was meant to certify
+  that D was generous -- while the fit captures barely a third of the true
+  chi^2. The check fails precisely because a capacity-limited fit looks
+  converged from the inside: its singular values collapse because the
+  networks have run out of representable directions, not because the true
+  spectrum has decayed. A decayed sigma_hat is therefore NOT evidence that
+  the rank was sufficient, and this diagnostic should not be used.
+
+  What survives is the coarser one. sigma_1 is 0.92 here against 0.67 in the
+  benign configuration, and chi^2_hat is about 35 even understated threefold
+  -- both large, both observable, and example 09 already identifies that as
+  the regime where the method loses. The regime indicator works; the
+  fine-grained sufficiency check does not.
