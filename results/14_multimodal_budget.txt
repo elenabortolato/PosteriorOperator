@@ -1,0 +1,11 @@
+================================================================================================
+Can rank and budget fix the operator's multimodality failure? (p = 4, 16 modes)
+================================================================================================
+  The posterior is exact, so nothing here is limited by a reference.
+  'valley' is the extra mass placed between the two modes, where the truth
+  has a minimum -- the specific defect, isolated from the aggregate error.
+
+    n_sim   rank  chi2_hat  sigma_1   NCP W1   valley   fit s
+------------------------------------------------------------------------------------------------
+    60000     16     11.02   0.9859   0.3262   0.0000      13
+    60000     64     18.51   0.9925   0.2623   0.0000      19

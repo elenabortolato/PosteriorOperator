@@ -67,21 +67,29 @@ def valley_excess(grid, exact_density, atoms, mass):
     an aggregate distance blurs together with everything else. This isolates
     it: the estimated probability of the interval around the density minimum
     between the two modes, minus the exact probability of the same interval.
+
+    Returns NaN for a coordinate whose posterior is unimodal, so that those are
+    excluded rather than silently counted as zero excess.
+
+    The second mode has to be found as a genuine LOCAL maximum. Taking an
+    argmax over a truncated range instead returns the shoulder of the dominant
+    peak, which is adjacent to it, and every downstream quantity then collapses
+    -- an earlier version of this function did exactly that and reported 0.0
+    for every input, including a measure with all its mass piled in the valley.
     """
     row = exact_density
-    peak = int(row.argmax())
-    other = int(row[: max(peak - 1, 1)].argmax()) if peak > len(row) // 2 else int(
-        row[min(peak + 1, len(row) - 1):].argmax() + peak + 1
-    )
-    low, high = sorted((peak, other))
-    if high - low < 3:
-        return 0.0
-    trough = low + int(row[low:high].argmin())
+    interior = row[1:-1]
+    maxima = torch.nonzero((interior > row[:-2]) & (interior > row[2:])).flatten() + 1
+    if maxima.numel() < 2:
+        return float("nan")
+    top_two = maxima[torch.argsort(row[maxima], descending=True)[:2]]
+    low, high = int(top_two.min()), int(top_two.max())
+    trough = low + int(row[low : high + 1].argmin())
     width = max((high - low) // 6, 1)
-    left, right = float(grid[max(trough - width, 0)]), float(grid[min(trough + width, len(grid) - 1)])
-    exact_mass = float(
-        torch.trapezoid(row[(grid >= left) & (grid <= right)], grid[(grid >= left) & (grid <= right)])
-    )
+    left = float(grid[max(trough - width, 0)])
+    right = float(grid[min(trough + width, len(grid) - 1)])
+    inside = (grid >= left) & (grid <= right)
+    exact_mass = float(torch.trapezoid(row[inside], grid[inside]))
     estimated_mass = float(mass[(atoms >= left) & (atoms <= right)].sum())
     return estimated_mass - exact_mass
 
@@ -119,19 +127,23 @@ def main() -> None:
             elapsed = time.perf_counter() - started
             posterior = operator.posterior(y_obs).with_projection("isotonic")
 
-            total = valley = 0.0
+            total = 0.0
+            valley_terms = []
             first = None
             for j in range(THETA_DIM):
                 grid, exact_cdf = exact[j]
                 values, cumulative = posterior._sorted_cdf(j)
                 mass = torch.diff(cumulative, dim=-1, prepend=torch.zeros(cumulative.shape[0], 1))
                 total += float(w1_against_exact(grid, exact_cdf, values, mass).mean()) / prior_sd[j]
-                valley += valley_excess(grid, exact_density[j][0], values, mass[0])
+                excess = valley_excess(grid, exact_density[j][0], values, mass[0])
+                if excess == excess:  # skip NaN: that coordinate is unimodal
+                    valley_terms.append(excess)
                 if j == 0:
                     first = (grid, exact_density[j][0], values, mass[0])
             print(f"{n_sim:>9}{rank:>7}{operator.chi2_divergence:>10.2f}"
                   f"{operator.maximal_correlation:>9.4f}{total / THETA_DIM:>9.4f}"
-                  f"{valley / THETA_DIM:>9.4f}{elapsed:>8.0f}", flush=True)
+                  f"{(sum(valley_terms) / len(valley_terms)) if valley_terms else float('nan'):>9.4f}"
+                  f"{elapsed:>8.0f}", flush=True)
             if n_sim == BUDGETS[-1]:
                 panels.append({"rank": rank, "w1": total / THETA_DIM, "first": first})
 
