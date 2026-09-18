@@ -1,0 +1,41 @@
+==============================================================================================
+Multimodality with an exact posterior: 2^p modes as p grows
+==============================================================================================
+  Theta ~ N(mu, I_p),  Y_j ~ N(Theta_j^2, sigma^2/m):  the sign is lost,
+  so each marginal is bimodal and the joint has up to 2^p modes.
+  60000 simulations shared, rank 64, NPE with 10 components,
+  100 observations scored. Errors are W1 to the EXACT marginal, in
+  units of the prior sd (which is 1 here by construction).
+
+   p  modes  prior-only      NCP      NPE   ratio  NCP mean  NPE mean  sigma_1    chi2
+----------------------------------------------------------------------------------------------
+   2      4      0.7271   0.1047   0.0280    3.74    0.0390    0.0173   0.9960   20.77   [56s]
+   4     16      0.6674   0.2178   0.0487    4.47    0.0436    0.0270   0.9926   21.02   [67s]
+   6     64      0.6500   0.2769   0.1045    2.65    0.0571    0.0441   0.9916   26.11   [100s]
+
+figure written to /home/user/PosteriorOperator/figures/multimodal_exact.png
+
+==============================================================================================
+Reading
+==============================================================================================
+  The prediction this was built to test does not hold. NPE is ahead at
+  every p, by factors of 3.74, 4.47 and 2.65, and the trend is not monotone,
+  so neither the operator's supposed advantage nor a mixture-capacity
+  penalty shows up.
+
+  The figure says why. NPE recovers both humps cleanly even at sixty-four
+  modes; the operator puts a spurious peak in the VALLEY between them. The
+  original argument confused support with weights. Prior atoms do sit near
+  both modes, but their weights come from a rank-d truncation, which is a
+  smooth approximation to the ratio and cannot turn sharply enough. Sharp
+  multimodality is expensive for this estimator, not free -- the same
+  smoothing that puts fifteen spurious islands in the SIR panel of example
+  06, seen here against an exact posterior instead of a quadrature one.
+
+  What this table CANNOT settle: chi^2 here is 21 to 26, which example 09
+  already calls NPE-favourable, so multimodality and concentration are
+  confounded in the numbers. The refutation rests on the figure, where
+  misplaced mass between modes is visible whatever chi^2 is doing.
+
+  The prior-only column remains the control, and both methods beat it
+  everywhere, so neither is degenerate.

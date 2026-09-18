@@ -17,18 +17,27 @@ marginal is a one-dimensional integral evaluated by quadrature on a grid that
 holds the whole prior mass -- machine precision, not an ABC tolerance. The
 test suite checks it against brute-force importance sampling.
 
-WHY THIS SHOULD FAVOUR THE OPERATOR, and it is a prediction, not a result. The
-operator reweights prior draws, so a second mode costs it nothing: if prior
-draws sit near both modes, the weights simply place mass on both. NPE must
-spend mixture components, and with 2^p modes a fixed budget of ten components
-is outrun by p = 4. The sweep below takes p = 2, 4 and 6 -- four, sixteen and
-sixty-four modes -- and the question is whether NPE degrades on that axis while
-the operator does not.
+THE PREDICTION THIS WAS BUILT TO TEST, AND ITS REFUTATION. The expectation was
+that multimodality would favour the operator: it reweights prior draws, so if
+draws sit near both modes the weights simply place mass on both, while NPE must
+spend mixture components and 2^p modes outruns a ten-component budget by p = 4.
 
-The honest alternative outcome: the operator's atoms are prior draws, and in
-p dimensions the share of them landing near ANY posterior mode falls with p,
-so it may degrade for a different reason at the same time. The prior-only
-column separates the two.
+That is wrong, and the figure shows it plainly. NPE recovers both humps cleanly
+at every p, including sixty-four modes, while the operator puts a spurious peak
+in the VALLEY between them. The argument confused support with weights: the
+prior atoms do cover both modes, but the weights on them come from a rank-d
+truncation, which is a SMOOTH approximation to the ratio. Resolving a sharp
+bimodal needs many spectral terms, so multimodality is expensive for the
+operator rather than free. Measured ratios of NCP error to NPE error are 3.74,
+4.47 and 2.65 at p = 2, 4 and 6 -- NPE ahead throughout, and not monotone, so
+there is no support for the capacity story either.
+
+A second confound, recorded because it limits what the table can settle: this
+model turned out to have chi^2 near 21 to 26, which example 09 already
+identifies as NPE-favourable territory. Multimodality and concentration are
+therefore mixed here, exactly the mistake the first version of example 09 made
+on dimension. The refutation above rests on the FIGURE, where the operator
+misplaces mass between modes, and that is visible whatever chi^2 is doing.
 
 Run:  python examples/lfi/13_multimodal_exact.py
 """
@@ -150,19 +159,27 @@ def main() -> None:
     print("\n" + "=" * 94)
     print("Reading")
     print("=" * 94)
-    print("  The 'ratio' column is the whole experiment: NCP error over NPE error, as")
-    print("  the number of modes goes 4, 16, 64 against a fixed ten-component mixture.")
-    print("  Below 1 means the operator is ahead. If the ratio FALLS down the column,")
-    print("  the prediction holds -- multimodality costs a mixture density network and")
-    print("  costs an atom reweighting nothing.")
+    print("  The prediction this was built to test does not hold. NPE is ahead at")
+    print("  every p, by factors of 3.74, 4.47 and 2.65, and the trend is not monotone,")
+    print("  so neither the operator's supposed advantage nor a mixture-capacity")
+    print("  penalty shows up.")
     print()
-    print("  The prior-only column is the control. Both methods must beat it, and at")
-    print("  larger p the posterior is closer to the prior, so an estimator can look")
-    print("  good by doing very little; the margin over that column is the real signal.")
+    print("  The figure says why. NPE recovers both humps cleanly even at sixty-four")
+    print("  modes; the operator puts a spurious peak in the VALLEY between them. The")
+    print("  original argument confused support with weights. Prior atoms do sit near")
+    print("  both modes, but their weights come from a rank-d truncation, which is a")
+    print("  smooth approximation to the ratio and cannot turn sharply enough. Sharp")
+    print("  multimodality is expensive for this estimator, not free -- the same")
+    print("  smoothing that puts fifteen spurious islands in the SIR panel of example")
+    print("  06, seen here against an exact posterior instead of a quadrature one.")
     print()
-    print("  The figure shows why, one dataset per row: the exact posterior has two")
-    print("  humps per coordinate, and the question is which estimator puts mass on")
-    print("  both of them.")
+    print("  What this table CANNOT settle: chi^2 here is 21 to 26, which example 09")
+    print("  already calls NPE-favourable, so multimodality and concentration are")
+    print("  confounded in the numbers. The refutation rests on the figure, where")
+    print("  misplaced mass between modes is visible whatever chi^2 is doing.")
+    print()
+    print("  The prior-only column remains the control, and both methods beat it")
+    print("  everywhere, so neither is degenerate.")
 
 
 def _plot(panels) -> None:
