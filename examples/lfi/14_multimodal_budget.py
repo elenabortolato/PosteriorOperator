@@ -47,9 +47,15 @@ BUDGETS = (60_000, 240_000)
 # 512, where the captured chi^2 doubles from 31.5 to 63.8). The second table
 # therefore raises the two together. The budget is smaller there because the
 # first table establishes that data is irrelevant at fixed rank.
-PAIRED = ((32, 32), (64, 64), (128, 128), (256, 256))
+PAIRED_RANKS = (32, 64, 128, 256, 512, 1024)
 PAIRED_BUDGET = 30_000
 PAIRED_EPOCHS = 150
+# The budget has to grow with the rank here, unlike in the first table. The
+# whitening's plug-in bias goes like sqrt(d/n), which is 0.03 at rank 32 and
+# n = 30000 but 0.18 at rank 1024 -- large enough that a degradation there
+# would be estimation noise rather than a statement about approximation. Held
+# at roughly sqrt(d/n) = 0.09 by scaling n with d.
+PAIRED_PER_RANK = 120
 NPE_COMPONENTS = 10
 
 NCP_COLOUR, NPE_COLOUR, TRUTH_COLOUR = "#1f77b4", "#ff7f0e", "0.80"
@@ -171,12 +177,16 @@ def main() -> None:
     print("\n" + "=" * 96)
     print("Rank AND width together (rank alone is capped by the embedding width)")
     print("=" * 96)
-    print(f"{'rank=width':>12}{'chi2_hat':>10}{'alive':>8}{'sigma_1':>9}{'NCP W1':>9}"
-          f"{'valley':>9}{'fit s':>8}")
+    print(f"{'rank=width':>12}{'n_sim':>9}{'sqrt(d/n)':>11}{'chi2_hat':>10}{'alive':>8}"
+          f"{'sigma_1':>9}{'NCP W1':>9}{'valley':>9}{'fit s':>8}")
     print("-" * 96)
-    theta_p, y_p = sim.sample_joint(PAIRED_BUDGET, generator=torch.Generator().manual_seed(SEED + 1))
     paired_panels = []
-    for rank, width in PAIRED:
+    for rank in PAIRED_RANKS:
+        width = rank
+        n_paired = max(PAIRED_BUDGET, PAIRED_PER_RANK * rank)
+        theta_p, y_p = sim.sample_joint(
+            n_paired, generator=torch.Generator().manual_seed(SEED + 1)
+        )
         started = time.perf_counter()
         torch.manual_seed(SEED)
         op = PosteriorOperator(theta_dim=THETA_DIM, data_dim=THETA_DIM, rank=rank, layer_size=width)
@@ -198,7 +208,8 @@ def main() -> None:
                 terms.append(excess)
             if j == 0:
                 first = (grid, exact_density[j][0], values, mass[0])
-        print(f"{f'{rank}':>12}{op.chi2_divergence:>10.2f}{alive:>8}"
+        print(f"{f'{rank}':>12}{n_paired:>9}{(rank / n_paired) ** 0.5:>11.3f}"
+              f"{op.chi2_divergence:>10.2f}{alive:>8}"
               f"{op.maximal_correlation:>9.4f}{total / THETA_DIM:>9.4f}"
               f"{(sum(terms) / len(terms)) if terms else float('nan'):>9.4f}"
               f"{elapsed:>8.0f}", flush=True)
