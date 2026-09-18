@@ -7,12 +7,12 @@ Can rank and budget fix the operator's multimodality failure? (p = 4, 16 modes)
 
     n_sim   rank  chi2_hat  sigma_1   NCP W1   valley   fit s
 ------------------------------------------------------------------------------------------------
-    60000     16     11.02   0.9859   0.3262   0.0681      13
-    60000     64     18.51   0.9925   0.2623   0.0541      19
-    60000    256     32.56   0.9945   0.2011   0.0368      81
-   240000     16     11.05   0.9863   0.3290   0.0682      79
-   240000     64     18.45   0.9925   0.2546   0.0404     129
-   240000    256     31.89   0.9945   0.2013   0.0183     388
+    60000     16     11.02   0.9859   0.3262   0.0681      14
+    60000     64     18.51   0.9925   0.2623   0.0541      20
+    60000    256     32.56   0.9945   0.2011   0.0368      85
+   240000     16     11.05   0.9863   0.3290   0.0682      82
+   240000     64     18.45   0.9925   0.2546   0.0404     128
+   240000    256     31.89   0.9945   0.2013   0.0183     392
 
 ================================================================================================
 Rank AND width together (rank alone is capped by the embedding width)
@@ -21,12 +21,12 @@ Rank AND width together (rank alone is capped by the embedding width)
 ------------------------------------------------------------------------------------------------
           32    30000      0.033      9.33      32   0.9864   0.3413   0.0815       2
           64    30000      0.046     15.67      64   0.9897   0.2885   0.1075       4
-         128    30000      0.065     29.82     128   0.9939   0.2049   0.0465      10
-         256    30720      0.091     59.78     256   0.9955   0.1742   0.0386      37
-         512    61440      0.091    113.01     511   0.9963   0.1357   0.0208     301
-        1024   122880      0.091    173.68    1021   0.9967   0.1312   0.0021    1914
+         128    30000      0.065     29.82     128   0.9939   0.2049   0.0465      11
+         256    30720      0.091     59.78     256   0.9955   0.1742   0.0386      36
+         512    61440      0.091    113.01     511   0.9963   0.1357   0.0208     294
+        1024   122880      0.091    173.68    1021   0.9967   0.1312   0.0021    1943
 ------------------------------------------------------------------------------------------------
-   240000    NPE                      0.0386              132
+   240000    NPE                      0.0386              133
 
 figure written to /home/user/PosteriorOperator/figures/multimodal_budget.png
 
@@ -35,13 +35,36 @@ figure written to /home/user/PosteriorOperator/figures/multimodal_width.png
 ================================================================================================
 Reading
 ================================================================================================
-  Read the 'valley' column down each budget block. It is the mass the
-  estimate puts between the modes, where the truth has a minimum, so it
-  measures the actual defect rather than an aggregate. If it shrinks with
-  rank, the smoothing explanation is right and the fix is spectral terms.
-  If it does not, sharp multimodality is a limitation of a low-rank ratio
-  model and no budget removes it.
+  Rank is the lever, budget is not: at fixed width, rank 16 to 256 moves
+  W1 from 0.3262 to 0.2011 while four times the simulations moves it from
+  0.3262 to 0.3290. The defect is approximation, not estimation.
 
-  Compare the NCP W1 column against the NPE row. Closing the gap is what
-  'achievable by spending more' would mean; note also the fit-time column,
-  since rank costs O(n d^2) and that is the price of the fix if it works.
+  Raising rank AND width together cures the specific defect completely.
+  Valley mass falls 0.0815, 0.1075, 0.0465, 0.0386, 0.0208, 0.0021 across
+  ranks 32 to 1024 -- a fortyfold reduction, and essentially zero at the
+  top. The smoothing account of example 13 was right, and spectral terms
+  are its cure.
+
+  BUT THE AGGREGATE ERROR PLATEAUS ANYWAY. W1 falls 0.3413, 0.2885, 0.2049,
+  0.1742, 0.1357, 0.1312: a steady factor of about 0.80 per doubling that
+  stops at the last step, where it is 0.97. It is levelling off near 0.13,
+  more than three times NPE's 0.0386, so more rank will NOT close the gap
+  on this model. An extrapolation of the 0.80 rate -- which this script
+  originally reported -- predicted that rank 27000 would match NPE. That
+  was wrong, because the rate stops holding exactly where it mattered.
+
+  The figure shows why. The error changes character rather than shrinking.
+  At low rank the estimate over-smooths and fills the valley; at rank 1024
+  both modes are resolved and the valley is empty, but the curve is jagged,
+  with high-frequency wiggles and an over-tall mode -- ringing from the
+  truncated expansion plus noise in the newly-added directions. One error
+  source is cured and another grows to take its place.
+
+  chi^2_hat doubles from 9.3 to 113 and only then slows, reaching 173.7 at
+  rank 1024. It never saturates, so this ratio is simply not low-rank, and
+  the diagnostic says so from the fit alone.
+
+  Cost makes the verdict unambiguous. Rank 1024 takes 1914s against NPE's
+  132s -- fourteen times the training time for three and a half times the
+  error. Sharp multimodality is not an intrinsic limitation of the
+  operator, but on this model it is not worth buying out of.
