@@ -36,6 +36,7 @@ __all__ = [
     "SIR",
     "SumIdentified",
     "DirichletMultinomial",
+    "SignAmbiguous",
 ]
 
 _LOG_SQRT_2PI = 0.5 * math.log(2 * math.pi)
@@ -982,3 +983,132 @@ class DirichletMultinomial(Simulator):
         inside = (full > 0).all(dim=-1)
         log_density = (y * torch.log(full.clamp_min(1e-30))).sum(dim=-1)
         return torch.where(inside, log_density, torch.full_like(log_density, -math.inf))
+
+
+class SignAmbiguous(Simulator):
+    r"""``Theta ~ N(mu, I_p)``, ``Y_j ~ N(Theta_j^2, sigma^2 / m)`` per coordinate.
+
+    A multimodal benchmark whose posterior is exact. Observing a squared
+    coordinate leaves the sign undetermined, so each marginal posterior is
+    **bimodal** -- near :math:`\pm\sqrt{y_j}` -- and the joint has up to
+    :math:`2^p` modes. The prior mean ``mu`` is deliberately non-zero: with a
+    symmetric prior the two modes would carry equal mass and the posterior mean
+    would be exactly zero, making every mean-error comparison vacuous.
+
+    Why it is worth having. None of the other exact-reference simulators here
+    is multimodal, and multimodality is where the two estimator families differ
+    structurally rather than quantitatively. The operator reweights prior
+    draws, so a second mode costs it nothing; a mixture density network must
+    spend components on each mode, and :math:`2^p` outruns any fixed component
+    budget by ``p = 4``.
+
+    Exactness. The coordinates are independent given the data, so each marginal
+    posterior is a one-dimensional integral,
+    :math:`\pi(\theta_j \mid y_j) \propto \varphi(\theta_j - \mu)\,
+    N(y_j; \theta_j^2, \sigma^2/m)`, evaluated here by Gauss-Legendre
+    quadrature on a grid wide enough to hold the whole prior mass. That is
+    machine precision for practical purposes, not an ABC tolerance.
+
+    Args:
+        theta_dim: number of coordinates, hence :math:`2^{\text{theta\_dim}}` modes.
+        noise: observation standard deviation before averaging replicates.
+        n_obs: replicates per coordinate; only their mean matters.
+        prior_mean: the symmetry-breaking prior location.
+    """
+
+    def __init__(
+        self,
+        theta_dim: int = 2,
+        noise: float = 0.6,
+        n_obs: int = 4,
+        prior_mean: float = 0.5,
+        **kw,
+    ):
+        super().__init__(**kw)
+        if theta_dim < 1:
+            raise ValueError(f"theta_dim must be positive, got {theta_dim}")
+        if noise <= 0:
+            raise ValueError(f"noise must be positive, got {noise}")
+        if n_obs < 1:
+            raise ValueError(f"n_obs must be positive, got {n_obs}")
+        self.theta_dim = int(theta_dim)
+        self.data_dim = int(theta_dim)
+        self.noise = float(noise)
+        self.n_obs = int(n_obs)
+        self.prior_mean = float(prior_mean)
+
+    @property
+    def effective_noise(self) -> float:
+        """Standard deviation of the averaged observation."""
+        return self.noise / math.sqrt(self.n_obs)
+
+    def sample_prior(self, n: int, generator: Optional[torch.Generator] = None) -> Tensor:
+        draw = torch.randn(n, self.theta_dim, generator=generator, dtype=self.dtype)
+        return draw + self.prior_mean
+
+    def simulate(self, theta: Tensor, generator: Optional[torch.Generator] = None) -> Tensor:
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, self.theta_dim)
+        noise = torch.randn(theta.shape, generator=generator, dtype=self.dtype)
+        return theta**2 + self.effective_noise * noise
+
+    def log_prior(self, theta: Tensor) -> Tensor:
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, self.theta_dim)
+        return (-0.5 * (theta - self.prior_mean) ** 2 - _LOG_SQRT_2PI).sum(dim=-1)
+
+    def log_likelihood(self, theta: Tensor, y_obs: Tensor) -> Tensor:
+        theta = torch.as_tensor(theta, dtype=self.dtype).reshape(-1, self.theta_dim)
+        y = torch.as_tensor(y_obs, dtype=self.dtype).reshape(1, self.theta_dim)
+        scale = self.effective_noise
+        return (
+            -0.5 * ((y - theta**2) / scale) ** 2 - math.log(scale) - _LOG_SQRT_2PI
+        ).sum(dim=-1)
+
+    # --- exact reference ---------------------------------------------------
+
+    def posterior_grid(
+        self, y_obs: Tensor, coordinate: int = 0, resolution: int = 2001, span: float = 6.0
+    ) -> Tuple[Tensor, Tensor]:
+        r"""Exact marginal posterior of one coordinate on a grid.
+
+        Returns ``(points, density)`` with shapes ``(resolution,)`` and
+        ``(n_obs, resolution)``, the density normalised by the trapezoid rule.
+        """
+        y = torch.as_tensor(y_obs, dtype=self.dtype).reshape(-1, self.theta_dim)
+        points = torch.linspace(
+            self.prior_mean - span, self.prior_mean + span, resolution, dtype=self.dtype
+        )
+        log_prior = -0.5 * (points - self.prior_mean) ** 2
+        residual = y[:, coordinate].unsqueeze(-1) - points.unsqueeze(0) ** 2
+        log_density = log_prior.unsqueeze(0) - 0.5 * (residual / self.effective_noise) ** 2
+        density = torch.exp(log_density - log_density.max(dim=-1, keepdim=True).values)
+        area = torch.trapezoid(density, points, dim=-1).unsqueeze(-1)
+        return points, density / area
+
+    def posterior_cdf(self, y_obs: Tensor, coordinate: int = 0, **kw) -> Tuple[Tensor, Tensor]:
+        """Exact marginal CDF on the same grid, for Wasserstein comparisons."""
+        points, density = self.posterior_grid(y_obs, coordinate, **kw)
+        cumulative = torch.cumulative_trapezoid(density, points, dim=-1)
+        cumulative = torch.cat([torch.zeros(cumulative.shape[0], 1, dtype=self.dtype), cumulative], -1)
+        return points, cumulative / cumulative[:, -1:].clamp_min(1e-30)
+
+    def posterior_mean(self, y_obs: Tensor) -> Tensor:
+        """Exact posterior mean, shape ``(n_obs, theta_dim)``."""
+        columns = []
+        for j in range(self.theta_dim):
+            points, density = self.posterior_grid(y_obs, j)
+            columns.append(torch.trapezoid(density * points.unsqueeze(0), points, dim=-1))
+        return torch.stack(columns, dim=-1)
+
+    def posterior_sd(self, y_obs: Tensor) -> Tensor:
+        """Exact marginal posterior standard deviations, shape ``(n_obs, theta_dim)``."""
+        mean = self.posterior_mean(y_obs)
+        columns = []
+        for j in range(self.theta_dim):
+            points, density = self.posterior_grid(y_obs, j)
+            centred = (points.unsqueeze(0) - mean[:, j : j + 1]) ** 2
+            columns.append(torch.trapezoid(density * centred, points, dim=-1).clamp_min(0).sqrt())
+        return torch.stack(columns, dim=-1)
+
+    def prior_sd(self) -> Tensor:
+        """Marginal prior standard deviations -- unit by construction."""
+        return torch.ones(self.theta_dim, dtype=self.dtype)

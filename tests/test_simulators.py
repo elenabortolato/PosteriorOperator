@@ -15,6 +15,7 @@ from posterior_operator.simulators import (
     SIR,
     AR2,
     DirichletMultinomial,
+    SignAmbiguous,
     GAndK,
     GaussianLinear,
     SumIdentified,
@@ -698,3 +699,71 @@ def test_log_prior_and_log_likelihood_reject_points_off_the_simplex():
     inside = torch.tensor([[0.3, 0.3]], dtype=DT)
     assert math.isfinite(float(sim.log_prior(inside)[0]))
     assert math.isfinite(float(sim.log_likelihood(inside, y)[0]))
+
+
+# --------------------------------------------------------------------------- #
+# SignAmbiguous -- the multimodal exact-reference benchmark
+# --------------------------------------------------------------------------- #
+
+
+def test_sign_ambiguous_validates_its_arguments():
+    with pytest.raises(ValueError, match="theta_dim must be positive"):
+        SignAmbiguous(theta_dim=0)
+    with pytest.raises(ValueError, match="noise must be positive"):
+        SignAmbiguous(noise=0.0)
+    with pytest.raises(ValueError, match="n_obs must be positive"):
+        SignAmbiguous(n_obs=0)
+
+
+def test_sign_ambiguous_quadrature_matches_importance_sampling():
+    """The exact reference, checked against a brute-force independent route."""
+    sim = SignAmbiguous(theta_dim=2, noise=0.6, n_obs=4, prior_mean=0.5, dtype=DT)
+    g = torch.Generator().manual_seed(0)
+    _, y_obs = sim.sample_joint(2, generator=g)
+    mean, cov = _importance_posterior(sim, y_obs[0], n=400_000, seed=1)
+    assert torch.allclose(mean, sim.posterior_mean(y_obs[:1])[0], atol=0.02)
+    assert torch.allclose(cov.diagonal().sqrt(), sim.posterior_sd(y_obs[:1])[0], atol=0.02)
+
+
+def test_sign_ambiguous_posterior_is_bimodal_near_plus_minus_sqrt_y():
+    sim = SignAmbiguous(theta_dim=1, noise=0.3, n_obs=4, prior_mean=0.5, dtype=DT)
+    y_obs = torch.tensor([[4.0]], dtype=DT)
+    points, density = sim.posterior_grid(y_obs, coordinate=0)
+    row = density[0]
+    interior = row[1:-1]
+    peaks = points[1:-1][(interior > row[:-2]) & (interior > row[2:])]
+    assert peaks.numel() == 2, f"expected two modes, found {peaks.numel()}"
+    assert torch.allclose(peaks.abs(), torch.full((2,), 2.0, dtype=DT), atol=0.15)
+    assert float(peaks[0]) < 0 < float(peaks[1])
+
+
+def test_sign_ambiguous_prior_mean_breaks_the_symmetry():
+    """A symmetric prior would make the posterior mean identically zero."""
+    y_obs = torch.tensor([[4.0]], dtype=DT)
+    symmetric = SignAmbiguous(theta_dim=1, prior_mean=0.0, dtype=DT)
+    assert abs(float(symmetric.posterior_mean(y_obs)[0, 0])) < 1e-9
+    tilted = SignAmbiguous(theta_dim=1, prior_mean=0.5, dtype=DT)
+    assert abs(float(tilted.posterior_mean(y_obs)[0, 0])) > 0.5
+
+
+def test_sign_ambiguous_density_and_cdf_are_consistent():
+    sim = SignAmbiguous(theta_dim=2, dtype=DT)
+    g = torch.Generator().manual_seed(2)
+    _, y_obs = sim.sample_joint(3, generator=g)
+    for j in range(2):
+        points, density = sim.posterior_grid(y_obs, coordinate=j)
+        assert torch.all(density >= 0)
+        assert torch.allclose(torch.trapezoid(density, points, dim=-1),
+                              torch.ones(3, dtype=DT), atol=1e-8)
+        grid, cdf = sim.posterior_cdf(y_obs, coordinate=j)
+        assert torch.allclose(grid, points)
+        assert torch.all(cdf.diff(dim=-1) >= -1e-12)
+        assert torch.allclose(cdf[:, -1], torch.ones(3, dtype=DT), atol=1e-8)
+
+
+def test_sign_ambiguous_simulate_matches_its_stated_law():
+    sim = SignAmbiguous(theta_dim=2, noise=0.6, n_obs=4, dtype=DT)
+    theta = torch.tensor([[1.5, -0.5]], dtype=DT).expand(200_000, 2)
+    y = sim.simulate(theta, generator=torch.Generator().manual_seed(0))
+    assert torch.allclose(y.mean(0), torch.tensor([2.25, 0.25], dtype=DT), atol=0.01)
+    assert torch.allclose(y.std(0), torch.full((2,), sim.effective_noise, dtype=DT), rtol=0.05)
