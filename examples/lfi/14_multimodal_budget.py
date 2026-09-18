@@ -40,6 +40,16 @@ N_EVAL = 60
 N_DRAWS = 4000
 RANKS = (16, 64, 256)
 BUDGETS = (60_000, 240_000)
+# Rank alone is capped by the embedding width: a layer_size-wide network emits
+# into a subspace of at most that dimension, so asking for rank 256 at width
+# 128 yields 128 usable singular values and 128 numerical zeros (measured:
+# sigma_128 = 6.8e-4, sigma_200 = 4.8e-9, against 0.277 and 0.078 at width
+# 512, where the captured chi^2 doubles from 31.5 to 63.8). The second table
+# therefore raises the two together. The budget is smaller there because the
+# first table establishes that data is irrelevant at fixed rank.
+PAIRED = ((32, 32), (64, 64), (128, 128), (256, 256))
+PAIRED_BUDGET = 30_000
+PAIRED_EPOCHS = 150
 NPE_COMPONENTS = 10
 
 NCP_COLOUR, NPE_COLOUR, TRUTH_COLOUR = "#1f77b4", "#ff7f0e", "0.80"
@@ -147,6 +157,45 @@ def main() -> None:
             if n_sim == BUDGETS[-1]:
                 panels.append({"rank": rank, "w1": total / THETA_DIM, "first": first})
 
+    # ------------------------------------------------------------------ #
+    # Rank and width raised together, which is the only way rank rises at all
+    # ------------------------------------------------------------------ #
+    print("\n" + "=" * 96)
+    print("Rank AND width together (rank alone is capped by the embedding width)")
+    print("=" * 96)
+    print(f"{'rank=width':>12}{'chi2_hat':>10}{'alive':>8}{'sigma_1':>9}{'NCP W1':>9}"
+          f"{'valley':>9}{'fit s':>8}")
+    print("-" * 96)
+    theta_p, y_p = sim.sample_joint(PAIRED_BUDGET, generator=torch.Generator().manual_seed(SEED + 1))
+    paired_panels = []
+    for rank, width in PAIRED:
+        started = time.perf_counter()
+        torch.manual_seed(SEED)
+        op = PosteriorOperator(theta_dim=THETA_DIM, data_dim=THETA_DIM, rank=rank, layer_size=width)
+        op.fit(theta_p, y_p, epochs=PAIRED_EPOCHS, lr=1e-3, seed=SEED)
+        elapsed = time.perf_counter() - started
+        spectrum = op.singular_values
+        alive = int((spectrum > 1e-6 * spectrum[0]).sum())
+        post = op.posterior(y_obs).with_projection("isotonic")
+        total = 0.0
+        terms = []
+        first = None
+        for j in range(THETA_DIM):
+            grid, exact_cdf = exact[j]
+            values, cumulative = post._sorted_cdf(j)
+            mass = torch.diff(cumulative, dim=-1, prepend=torch.zeros(cumulative.shape[0], 1))
+            total += float(w1_against_exact(grid, exact_cdf, values, mass).mean()) / prior_sd[j]
+            excess = valley_excess(grid, exact_density[j][0], values, mass[0])
+            if excess == excess:
+                terms.append(excess)
+            if j == 0:
+                first = (grid, exact_density[j][0], values, mass[0])
+        print(f"{f'{rank}':>12}{op.chi2_divergence:>10.2f}{alive:>8}"
+              f"{op.maximal_correlation:>9.4f}{total / THETA_DIM:>9.4f}"
+              f"{(sum(terms) / len(terms)) if terms else float('nan'):>9.4f}"
+              f"{elapsed:>8.0f}", flush=True)
+        paired_panels.append({"rank": rank, "w1": total / THETA_DIM, "first": first})
+
     # NPE at the largest budget, as the target to close on.
     theta_fit, y_fit = sim.sample_joint(BUDGETS[-1], generator=torch.Generator().manual_seed(SEED + 1))
     torch.manual_seed(SEED)
@@ -169,6 +218,8 @@ def main() -> None:
     print(f"{BUDGETS[-1]:>9}{'NPE':>7}{'':>10}{'':>9}{npe_w1:>9.4f}{'':>9}{npe_elapsed:>8.0f}")
 
     _plot(panels, npe_w1, draws[0, :, 0])
+    _plot(paired_panels, npe_w1, draws[0, :, 0], name="multimodal_width.png",
+          title="Rank AND width raised together")
 
     print("\n" + "=" * 96)
     print("Reading")
@@ -185,7 +236,8 @@ def main() -> None:
     print("  since rank costs O(n d^2) and that is the price of the fix if it works.")
 
 
-def _plot(panels, npe_w1, npe_first) -> None:
+def _plot(panels, npe_w1, npe_first, name="multimodal_budget.png",
+          title="Does more rank let the operator resolve the valley between modes?") -> None:
     try:
         import matplotlib
 
@@ -227,12 +279,11 @@ def _plot(panels, npe_w1, npe_first) -> None:
     ax.set_yticks([])
     ax.set_xlim(-4, 4)
     ax.legend(fontsize=8, frameon=False)
-    fig.suptitle("Does more rank let the operator resolve the valley between modes? "
-                 f"(p = {THETA_DIM}, largest budget)", fontsize=10)
+    fig.suptitle(f"{title}  (p = {THETA_DIM}, {2 ** THETA_DIM} modes)", fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
-    fig.savefig(figures / "multimodal_budget.png", dpi=150)
+    fig.savefig(figures / name, dpi=150)
     plt.close(fig)
-    print(f"\nfigure written to {figures}/multimodal_budget.png")
+    print(f"\nfigure written to {figures}/{name}")
 
 
 if __name__ == "__main__":
