@@ -45,7 +45,7 @@ from posterior_operator.baselines import DirectRegression, NeuralPosteriorEstima
 from posterior_operator.simulators import SIR
 
 SEED = 0
-N_SIM = 30000
+N_SIM = 200000
 # Chosen by measurement, not by default: a sweep over rank at this simulation
 # budget (reproduce it with --rank-sweep) gives
 #
@@ -136,6 +136,13 @@ def main() -> None:
           f"  NPE {npe_train:.0f}s ({npe.parameter_count():,} params)")
 
     posterior = operator.posterior(y_obs)
+    # Order-statistic queries go through the monotone projection rather than
+    # clip-and-renormalise. On this model the difference is the whole of the
+    # operator's weakness at the tail quantile: clipping discards the negative
+    # masses that carve probability out of the prior's tails, so every quantile
+    # reverts towards the prior. See PosteriorSample.with_projection and
+    # examples/lfi/08_gandk_npe.py for the measurement.
+    order_statistics = posterior.with_projection("isotonic")
     mc_generator = torch.Generator().manual_seed(SEED + 1)
 
     # NPE puts a Gaussian mixture on an unbounded space while the prior is a box,
@@ -197,7 +204,7 @@ def main() -> None:
     )
 
     # A quantile: an order statistic, so not a single regression target at all.
-    ncp_value = posterior.quantile(0.9, observable=r0).reshape(-1, 1)
+    ncp_value = order_statistics.quantile(0.9, observable=r0).reshape(-1, 1)
     npe_r0 = r0(npe_draws.reshape(-1, 2)).reshape(N_OBS, -1)
     npe_r0 = torch.where(inside, npe_r0, torch.full_like(npe_r0, float("nan")))
     npe_value = torch.nanquantile(npe_r0, 0.9, dim=-1).unsqueeze(-1)

@@ -54,28 +54,28 @@ from posterior_operator.baselines import NeuralPosteriorEstimator
 from posterior_operator.simulators import GAndK
 
 SEED = 0
-N_SIM = 60000  # training budget, shared by both methods
+N_SIM = 240000  # training budget, shared by both methods
 N_REFERENCE = 2_000_000  # prior-predictive table for the ABC reference
 ABC_KEEP = 2000  # retained draws per observation (0.1%)
 N_SCORED = 24  # observations given a full ABC reference
 N_COVERAGE = 300  # observations used for the coverage check
-# Rank is not the binding constraint here, which is worth knowing before
-# reading the results as a verdict on the method. A sweep at this budget gives
+# Rank and budget, both measured rather than guessed. A sweep at n = 60000 on
+# the CLIPPED measure gave a flat picture -- W1 between 0.287 and 0.310 for
+# ranks 32 to 512, coverage pinned near 0.98 -- which is what the clipping does
+# rather than what the rank does. Under the monotone projection the same axis
+# looks different (examples/lfi/12_gandk_budget.py):
 #
-#   rank  interval width  chi^2  sigma_1  neg. mass  ESS/n      W1  coverage
-#     32            7.66   18.9   0.9836      0.445  0.233  0.3101     0.980
-#     64            7.65   24.8   0.9852      0.450  0.203  0.2868     0.981
-#    128            7.76   36.0   0.9862      0.460  0.172  0.2874     0.979
-#    256            7.73   37.0   0.9859      0.463  0.169  0.2911     0.983
-#    512            7.79   36.5   0.9860      0.462  0.167  0.2931     0.980
-#   (ABC            5.35)
+#   rank    W1 @ n=15k   W1 @ n=60k   W1 @ n=240k
+#      8        0.3310       0.3243        0.3276
+#     32        0.1435       0.1407        0.1381
+#    128        0.1239       0.1022        0.0939
 #
-# Sixteen times the rank moves the interval width by under 2% and the marginal
-# error not at all, while coverage stays pinned near 0.98 against a nominal
-# 0.90. Only the posterior mean improves slightly. So the over-dispersion below
-# is not an under-ranked fit that more capacity would cure; see the
-# signed-versus-clipped section for what it actually is.
-RANK = 64
+# Read down: budget is worth ~1% at rank 8 and ~24% at rank 128, because low
+# rank is truncation-limited and high rank is estimation-limited. Read across:
+# rank is worth 63% at a fixed budget, far more than sixteen times the data.
+# So rank first, then budget -- and both are set generously below. The
+# reference's own self-drift is 0.0378, so differences under that are noise.
+RANK = 128
 LAYER_SIZE = 128
 NAMES = ("A", "B", "g", "k")
 
@@ -484,11 +484,11 @@ def _plot(sim, references, probability, iso_atoms, iso_masses, npe_draws, theta_
             return np.bincount(index, weights=masses, minlength=len(centres)) / np.diff(edges)
 
         ax.plot(centres, binned(probability.atoms[:, j].numpy(), probability.weights[which].numpy()),
-                color="C0", lw=1.6, ls="--", label="NCP (clipped)")
+                color="0.45", lw=1.5, ls="--", label="NCP (clipped)")
         ax.plot(centres, binned(iso_atoms[j].numpy(), iso_masses[j][which].numpy()),
-                color="C2", lw=1.8, label="NCP (isotonic)")
+                color="#1f77b4", lw=2.0, label="NCP (isotonic)")
         density, _ = np.histogram(npe_draws[which, :, j].numpy(), bins=edges, density=True)
-        ax.plot(centres, density, color="C3", lw=1.8, label="NPE")
+        ax.plot(centres, density, color="#ff7f0e", lw=2.0, ls=":", label="NPE")
         ax.axvline(float(theta_true[which, j]), color="k", ls="--", lw=1.2, label=r"$\theta_{true}$")
         ax.axhline(1.0 / sim.prior_high, color="0.5", ls=":", lw=1.0, label="prior")
         ax.set_xlabel(name)
@@ -506,9 +506,9 @@ def _plot(sim, references, probability, iso_atoms, iso_masses, npe_draws, theta_
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.6))
     x = np.arange(4)
     ax = axes[0]
-    ax.bar(x - 0.26, (ncp_w1.mean(0) / prior_sd).numpy(), 0.26, color="C0", label="NCP (clipped)")
-    ax.bar(x, (iso_w1.mean(0) / prior_sd).numpy(), 0.26, color="C2", label="NCP (isotonic)")
-    ax.bar(x + 0.26, (npe_w1.mean(0) / prior_sd).numpy(), 0.26, color="C3", label="NPE")
+    ax.bar(x - 0.26, (ncp_w1.mean(0) / prior_sd).numpy(), 0.26, color="0.45", label="NCP (clipped)")
+    ax.bar(x, (iso_w1.mean(0) / prior_sd).numpy(), 0.26, color="#1f77b4", label="NCP (isotonic)")
+    ax.bar(x + 0.26, (npe_w1.mean(0) / prior_sd).numpy(), 0.26, color="#ff7f0e", label="NPE")
     for k, value in enumerate(drift.tolist()):
         ax.hlines(value, k - 0.42, k + 0.42, color="k", ls="--", lw=1.2,
                   label="reference floor" if k == 0 else None)
@@ -518,9 +518,9 @@ def _plot(sim, references, probability, iso_atoms, iso_masses, npe_draws, theta_
     ax.legend(fontsize=8, frameon=False)
 
     ax = axes[1]
-    ax.bar(x - 0.26, ncp_cov, 0.26, color="C0", label="NCP (clipped)")
-    ax.bar(x, iso_cov, 0.26, color="C2", label="NCP (isotonic)")
-    ax.bar(x + 0.26, npe_cov, 0.26, color="C3", label="NPE")
+    ax.bar(x - 0.26, ncp_cov, 0.26, color="0.45", label="NCP (clipped)")
+    ax.bar(x, iso_cov, 0.26, color="#1f77b4", label="NCP (isotonic)")
+    ax.bar(x + 0.26, npe_cov, 0.26, color="#ff7f0e", label="NPE")
     ax.axhline(0.9, color="k", ls="--", lw=1.2, label="nominal 0.90")
     ax.set_xticks(x, NAMES)
     ax.set_ylim(0.8, 1.02)  # zoomed: everything of interest sits above 0.85
