@@ -261,6 +261,7 @@ density network, i.e. NPE in its original form).
 | `lfi/09_conjugate_exact_truth.py` | Dirichlet-Multinomial, posterior exact in closed form: which *regime* favours NCP over NPE |
 | `lfi/10_self_certification.py` | does the fitted spectrum report its own error? Calibration against a closed-form ratio |
 | `lfi/11_simulate_more.py` | when a larger simulation budget helps, when rank is the real constraint, and when neither is |
+| `lfi/12_gandk_budget.py` | the same question on g-and-k: rank turns out to be the better investment than budget |
 
 Together these cover the experimental protocol. Note the division of labour
 between the two NPE comparisons: `06` uses SIR, which is mechanistic but has a

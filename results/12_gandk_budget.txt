@@ -1,0 +1,31 @@
+================================================================================================
+g-and-k: does a larger simulation budget help, and does the tail say why?
+================================================================================================
+  No closed-form ratio here, so the error is measured against a 2,000,000-draw ABC
+  reference, 16 observations. Every fit uses rank D = 128 and is truncated.
+
+  reference self-drift when the tolerance is tightened 4x: 0.0378
+  -> differences below this are reference error, not method error.
+
+    n_sim  chi2_hat  sigma_1   decay    rep@8     W1@8   rep@32    W1@32  rep@128   W1@128   NPE W1
+---------------------------------------------------------------------------------------------------
+    15000     26.80   0.9852   0.001    4.431   0.3310    2.604   0.1435    0.000   0.1239   0.1208   [21s]
+    60000     25.85   0.9849   0.001    4.327   0.3243    2.485   0.1407    0.000   0.1022   0.0878   [87s]
+   240000     25.72   0.9849   0.000    4.311   0.3276    2.470   0.1381    0.000   0.0939   0.0846   [405s]
+
+================================================================================================
+Reading
+================================================================================================
+  Read DOWN a 'W1@d' column for the effect of budget at a fixed rank, and
+  ACROSS a row for the effect of rank at a fixed budget. Example 11 predicts
+  the low-rank columns are flat in the budget (truncation-limited) and the
+  high-rank column improves (estimation-limited); whether that survives on a
+  model with no closed-form ratio is the point of running it here.
+
+  Compare the NPE column down the same rows. If NPE keeps improving with
+  budget while the operator plateaus at every rank, the constraint is
+  neither truncation nor estimation but capacity -- the third knob example 11
+  identified at high chi^2 and did not test.
+
+  Nothing below the reference-drift figure printed above should be read as
+  a real difference.

@@ -24,6 +24,7 @@ to see the evidence without waiting for it.
 | `09_conjugate_exact_truth.txt` | `examples/lfi/09_...` | **exact truth, no reference error**: NCP vs NPE on a conjugate model, swept over parameter dimension and posterior concentration |
 | `10_self_certification.txt` | `examples/lfi/10_...` | **the central claim**: the reported spectral tail against the true truncation error, and what the accuracy looks like as the dimension grows |
 | `11_simulate_more.txt` | `examples/lfi/11_...` | when more simulations help and when they do not; a plausible rank self-check shown to FAIL |
+| `12_gandk_budget.txt` | `examples/lfi/12_...` | the same budget-versus-rank grid on g-and-k, where no closed-form ratio exists |
 
 Runs are seeded, so re-running reproduces these files up to floating-point
 non-determinism in the threaded BLAS calls. Timings in the captured output are
