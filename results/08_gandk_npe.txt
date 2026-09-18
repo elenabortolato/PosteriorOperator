@@ -3,10 +3,10 @@ g-and-k: no closed-form density, so this is a real likelihood-free model
 ====================================================================================
   prior            uniform on [0, 10]^4 over (A, B, g, k)
   data             100 iid draws -> 4 octile summaries (log on spread, kurtosis)
-  training budget  60000 simulations, shared by NCP and NPE
+  training budget  240000 simulations, shared by NCP and NPE
   reference        rejection ABC, 2,000,000 draws, closest 2000 kept
 
-reference table simulated in 5.7s
+reference table simulated in 5.3s
 ABC tolerance over the 24 scored observations: median 0.353, max 0.809
 reference self-drift when the tolerance is tightened 4x (W1 / prior sd):
    A=0.035  B=0.057  g=0.047  k=0.024
@@ -15,10 +15,10 @@ reference self-drift when the tolerance is tightened 4x (W1 / prior sd):
 ====================================================================================
 Training, on the same simulations
 ====================================================================================
-  NCP  rank  64    50,752 parameters  fitted in   50.8s
-  NPE  10 cmp      28,762 parameters  fitted in   64.1s
-  sigma_1 = 0.9852,  chi^2 = 24.75
-  top singular values: [0.985 0.981 0.969 0.963 0.959 0.943]
+  NCP  rank 128    67,200 parameters  fitted in  424.7s
+  NPE  10 cmp      28,762 parameters  fitted in  198.5s
+  sigma_1 = 0.9861,  chi^2 = 35.93
+  top singular values: [0.986 0.982 0.974 0.967 0.964 0.948]
 
 ====================================================================================
 Accuracy against the ABC reference, averaged over 24 observations
@@ -29,12 +29,12 @@ Accuracy against the ABC reference, averaged over 24 observations
 
         |mean err| NCP      NPE      W1 NCP clip   NCP iso      NPE    ref floor
 ------------------------------------------------------------------------------------
-     A          0.0630   0.0486           0.4612    0.1222   0.0811       0.0346
-     B          0.1046   0.1391           0.2532    0.1077   0.1463       0.0570
-     g          0.0856   0.0879           0.1820    0.1094   0.1039       0.0472
-     k          0.0550   0.0370           0.3624    0.0841   0.0473       0.0235
+     A          0.0479   0.0391           0.4473    0.0899   0.0740       0.0346
+     B          0.1084   0.1394           0.2625    0.1200   0.1514       0.0570
+     g          0.0692   0.0804           0.1777    0.0914   0.1082       0.0472
+     k          0.0422   0.0344           0.3679    0.0703   0.0462       0.0235
 ------------------------------------------------------------------------------------
-   all          0.0771   0.0781           0.3147    0.1059   0.0947       0.0406
+   all          0.0669   0.0733           0.3138    0.0929   0.0949       0.0406
 
 ====================================================================================
 Calibration: nominal 90% credible intervals over 300 observations
@@ -44,26 +44,26 @@ Calibration: nominal 90% credible intervals over 300 observations
 
         coverage clip    iso     NPE     width clip     iso     NPE     ABC
 ------------------------------------------------------------------------------------
-     A          0.997  0.977   0.900          7.082   3.427   1.933   2.543
-     B          0.993  0.960   0.917          8.196   6.167   5.649   6.808
-     g          0.963  0.913   0.920          8.527   7.282   7.536   8.188
-     k          0.997  0.953   0.930          6.824   3.345   2.813   3.171
+     A          0.990  0.967   0.907          7.232   3.056   1.929   2.543
+     B          0.987  0.943   0.913          8.217   5.887   5.598   6.808
+     g          0.960  0.920   0.923          8.575   7.244   7.524   8.188
+     k          0.997  0.950   0.923          6.982   3.141   2.773   3.171
 ------------------------------------------------------------------------------------
-  mean          0.987  0.951   0.917     nominal 0.900
+  mean          0.983  0.945   0.917     nominal 0.900
 
 ====================================================================================
 Signed versus clipped masses: where the shape error actually comes from
 ====================================================================================
-  fraction of negative masses      0.450
-  ESS / n_atoms after clipping     0.207   (1.0 would be the prior itself)
+  fraction of negative masses      0.462
+  ESS / n_atoms after clipping     0.174   (1.0 would be the prior itself)
 
   posterior standard deviation, averaged over the scored observations:
             ABC  NCP signed  NCP clip  NCP iso      NPE   prior
 ------------------------------------------------------------------------------------
-     A    0.804       0.682     2.380    1.111    0.643   2.887
-     B    2.122       1.932     2.690    2.188    1.921   2.886
-     g    2.577       2.567     2.831    2.581    2.508   2.888
-     k    0.972       0.870     2.297    1.201    0.899   2.887
+     A    0.804       0.623     2.410    1.043    0.626   2.887
+     B    2.122       1.903     2.698    2.108    1.874   2.886
+     g    2.577       2.510     2.827    2.537    2.495   2.888
+     k    0.972       0.832     2.336    1.126    0.887   2.887
 ------------------------------------------------------------------------------------
   The signed column is the estimator of Eq. (2) verbatim; the clip and iso
   columns are two ways of turning the same numbers into a probability measure.
@@ -81,10 +81,10 @@ Cost of one more functional, after training
 
          cold (ms/obs)   warm (ms/obs)    f evaluated at
 ------------------------------------------------------------------------------------
-   NCP          0.0603          0.0046       20,000 pts
-   NPE          0.2658          0.0069    1,200,000 pts
+   NCP          0.0374          0.0031       20,000 pts
+   NPE          0.2401          0.0040    1,200,000 pts
 ------------------------------------------------------------------------------------
-  cold: 4x in NCP's favour, warm: 2x
+  cold: 6x in NCP's favour, warm: 1x
   The structural reason is the last column. The operator's atoms are the same
   stored prior draws for every observation, so a new f is evaluated once for
   the whole batch and each observation costs one dot product. NPE's draws are
