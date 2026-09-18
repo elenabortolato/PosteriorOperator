@@ -7,5 +7,32 @@ Can rank and budget fix the operator's multimodality failure? (p = 4, 16 modes)
 
     n_sim   rank  chi2_hat  sigma_1   NCP W1   valley   fit s
 ------------------------------------------------------------------------------------------------
-    60000     16     11.02   0.9859   0.3262   0.0000      13
-    60000     64     18.51   0.9925   0.2623   0.0000      19
+    60000     16     11.02   0.9859   0.3262   0.0681      13
+    60000     64     18.51   0.9925   0.2623   0.0541      18
+    60000    256     32.56   0.9945   0.2011   0.0368      81
+   240000     16     11.05   0.9863   0.3290   0.0682      82
+   240000     64     18.45   0.9925   0.2546   0.0404     124
+   240000    256     31.89   0.9945   0.2013   0.0183     390
+
+================================================================================================
+Rank AND width together (rank alone is capped by the embedding width)
+================================================================================================
+  rank=width  chi2_hat   alive  sigma_1   NCP W1   valley   fit s
+------------------------------------------------------------------------------------------------
+          32      9.33      32   0.9864   0.3413   0.0815       2
+          64     15.67      64   0.9897   0.2885   0.1075       4
+         128     29.82     128   0.9939   0.2049   0.0465      10
+         256     60.06     256   0.9956   0.1717   0.0382      36
+------------------------------------------------------------------------------------------------
+   240000    NPE                      0.0386             1925
+
+figure written to /home/user/PosteriorOperator/figures/multimodal_budget.png
+Traceback (most recent call last):
+  File "/home/user/PosteriorOperator/examples/lfi/14_multimodal_budget.py", line 290, in <module>
+    main()
+  File "/home/user/PosteriorOperator/examples/lfi/14_multimodal_budget.py", line 221, in main
+    _plot(paired_panels, npe_w1, draws[0, :, 0], name="multimodal_width.png",
+  File "/home/user/PosteriorOperator/examples/lfi/14_multimodal_budget.py", line 263, in _plot
+    ax.plot(centres, height / np.diff(edges), color=RANK_RAMP[k], lw=2.0,
+                                                    ~~~~~~~~~^^^
+IndexError: tuple index out of range

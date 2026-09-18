@@ -25,6 +25,8 @@ to see the evidence without waiting for it.
 | `10_self_certification.txt` | `examples/lfi/10_...` | **the central claim**: the reported spectral tail against the true truncation error, and what the accuracy looks like as the dimension grows |
 | `11_simulate_more.txt` | `examples/lfi/11_...` | when more simulations help and when they do not; a plausible rank self-check shown to FAIL |
 | `12_gandk_budget.txt` | `examples/lfi/12_...` | the same budget-versus-rank grid on g-and-k, where no closed-form ratio exists |
+| `14_multimodal_budget.txt` | `examples/lfi/14_...` | rank vs budget on that defect, and the discovery that embedding width caps every rank sweep |
+| `13_multimodal_exact.txt` | `examples/lfi/13_...` | multimodality against an exact posterior; the operator smooths across modes |
 
 Runs are seeded, so re-running reproduces these files up to floating-point
 non-determinism in the threaded BLAS calls. Timings in the captured output are

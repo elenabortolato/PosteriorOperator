@@ -262,6 +262,8 @@ density network, i.e. NPE in its original form).
 | `lfi/10_self_certification.py` | does the fitted spectrum report its own error? Calibration against a closed-form ratio |
 | `lfi/11_simulate_more.py` | when a larger simulation budget helps, when rank is the real constraint, and when neither is |
 | `lfi/12_gandk_budget.py` | the same question on g-and-k: rank turns out to be the better investment than budget |
+| `lfi/13_multimodal_exact.py` | multimodality with an exact posterior: the operator smooths across modes, NPE does not |
+| `lfi/14_multimodal_budget.py` | rank vs budget on that defect; embedding width silently caps every rank sweep |
 
 Together these cover the experimental protocol. Note the division of labour
 between the two NPE comparisons: `06` uses SIR, which is mechanistic but has a
